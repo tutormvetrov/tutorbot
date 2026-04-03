@@ -9,7 +9,7 @@ from data import config
 
 
 async def main() -> int:
-    if not config.ADMIN_ID or not config.BOT_TOKEN:
+    if not config.BOT_TOKEN or not config.ADMIN_ID:
         return 1
 
     message = " ".join(sys.argv[1:]).strip() or "Бот обновился!"
