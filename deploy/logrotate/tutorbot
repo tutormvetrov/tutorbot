@@ -1,0 +1,9 @@
+/srv/tutorbot/bot.log {
+    daily
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}
