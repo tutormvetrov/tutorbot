@@ -6,8 +6,15 @@ import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
 
-ROOT = Path("/srv/tutorbot").resolve()
+
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(DEFAULT_ROOT / ".env")
+
+ROOT = Path(os.getenv("TUTORBOT_ROOT", DEFAULT_ROOT)).resolve()
+SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot").strip() or "tutorbot"
+SYSTEMD_SCOPE = os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system").strip() or "system"
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",
@@ -30,7 +37,19 @@ ALLOWED_SUFFIXES = {".py", ".env", ".toml", ".ini", ".yaml", ".yml", ".json"}
 EXACT_FILENAMES = {".env"}
 POLL_INTERVAL_SECONDS = 1.0
 SETTLE_SECONDS = 0.75
-RESTART_COMMAND = ["systemctl", "--user", "restart", "tutorbot.service"]
+
+
+def _build_restart_command() -> list[str]:
+    command = ["systemctl"]
+    if SYSTEMD_SCOPE == "user":
+        command.append("--user")
+    else:
+        command.append("--system")
+    command.extend(["restart", f"{SERVICE_NAME}.service"])
+    return command
+
+
+RESTART_COMMAND = _build_restart_command()
 
 
 def _should_watch(path: Path) -> bool:

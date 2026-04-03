@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${TUTORBOT_ROOT:-/srv/tutorbot}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${TUTORBOT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ROOT/.env"
+  set +a
+fi
+SERVICE_NAME="${TUTORBOT_SERVICE_NAME:-tutorbot}"
+SYSTEMD_SCOPE="${TUTORBOT_SYSTEMD_SCOPE:-system}"
+SYSTEMCTL_SCOPE_FLAG=(--system)
+if [ "$SYSTEMD_SCOPE" = "user" ]; then
+  SYSTEMCTL_SCOPE_FLAG=(--user)
+fi
 BOT_CMD="$ROOT/.venv/bin/python $ROOT/app.py"
 OPS_STATUS="$ROOT/data/ops_status.json"
 RUNTIME_METRICS="$ROOT/data/runtime_metrics.jsonl"
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet tutorbot; then
+if [ -x "$ROOT/.venv/bin/python" ]; then
+  "$ROOT/.venv/bin/python" "$ROOT/scripts/validate_env.py" >/dev/null
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl "${SYSTEMCTL_SCOPE_FLAG[@]}" is-active --quiet "${SERVICE_NAME}.service"; then
   :
 elif pgrep -af "$BOT_CMD" >/dev/null 2>&1; then
   :

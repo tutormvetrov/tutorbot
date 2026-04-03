@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: 123456:TESTTOKEN
+      ADMIN_ID: 1
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      DATABASE: tutorbot
+      PGHOST: localhost
+      PGPORT: 5432
+      GOOGLE_CALENDAR_ID: ""
+      GOOGLE_CREDENTIALS_FILE: ""
+      TUTORBOT_ROOT: ${{ github.workspace }}
+      TUTORBOT_SERVICE_NAME: tutorbot
+      TUTORBOT_SYSTEMD_SCOPE: system
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: make install-dev
+
+      - name: Quality gate
+        run: make check

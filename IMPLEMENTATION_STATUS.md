@@ -10,6 +10,10 @@
 - Еженедельная сводка родителям
 - Переключаемая тональность бренда
 - Рабочие заметки для агента: текст и скриншоты
+- Документированный release workflow: quality gate, backup/restore, smoke check, rollback
+- Startup env validation и `ExecStartPre` для systemd
+- Dev-quality контур: Makefile, CI, ruff, mypy, pytest
+- Операционные скрипты: validate-env, backup, restore, release smoke
 
 ## Ближайшая очередь
 

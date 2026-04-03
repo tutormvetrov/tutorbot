@@ -7,6 +7,7 @@ Wants=postgresql.service
 Type=simple
 WorkingDirectory=/srv/tutorbot
 EnvironmentFile=/srv/tutorbot/.env
+ExecStartPre=/srv/tutorbot/.venv/bin/python /srv/tutorbot/scripts/validate_env.py
 ExecStart=/srv/tutorbot/.venv/bin/python /srv/tutorbot/app.py
 Restart=on-failure
 RestartSec=5
@@ -16,6 +17,9 @@ Group=deploy
 StandardOutput=append:/srv/tutorbot/bot.log
 StandardError=append:/srv/tutorbot/bot.log
 Environment=PYTHONUNBUFFERED=1
+Environment=TUTORBOT_ROOT=/srv/tutorbot
+Environment=TUTORBOT_SERVICE_NAME=tutorbot
+Environment=TUTORBOT_SYSTEMD_SCOPE=system
 
 [Install]
 WantedBy=multi-user.target

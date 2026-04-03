@@ -13,6 +13,7 @@ from aiogram.types import (
 
 from data import config
 from loader import bot, dp
+from utils.config_validation import assert_runtime_config
 from utils.db_api.postgresql import Database
 from utils.observability import update_ops_status, write_runtime_event
 from utils.ui_text import DEACTIVATED_ACCOUNT_TEXT
@@ -75,6 +76,14 @@ class DatabaseMiddleware(BaseMiddleware):
 
 async def main():
     import handlers  # noqa: F401 — регистрация роутеров
+
+    try:
+        assert_runtime_config()
+    except RuntimeError as exc:
+        logger.critical("%s", exc)
+        update_ops_status(status="error", scheduler="stopped", startup_error=str(exc))
+        write_runtime_event("startup", "error", reason="invalid_config", details=str(exc))
+        raise
 
     # Проверяем токен
     me = await bot.get_me()

@@ -4,75 +4,160 @@ Telegram-бот для управления учебным процессом: �
 
 ## Быстрый старт
 
-1. Создайте и заполните `.env`.
-2. Укажите сервисный аккаунт Google Calendar через `GOOGLE_CREDENTIALS_FILE`.
-3. Установите зависимости:
+1. Создайте `.env` по образцу `.env.example`.
+2. Заполните обязательные переменные: `BOT_TOKEN`, `ADMIN_ID`, `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT`.
+3. Если нужен Google Calendar sync, заполните обе переменные `GOOGLE_CALENDAR_ID` и `GOOGLE_CREDENTIALS_FILE`.
+4. Установите runtime-зависимости:
 
 ```bash
-pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt
 ```
 
-4. Запустите бота:
+5. Проверьте конфиг и запустите бота:
 
 ```bash
-python app.py
+.venv/bin/python scripts/validate_env.py
+.venv/bin/python app.py
 ```
 
-## Переменные окружения
+## Конфиг
 
-- `BOT_TOKEN` - токен Telegram-бота.
-- `ADMIN_ID` - Telegram ID администратора.
-- `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT` - параметры PostgreSQL.
-- `GOOGLE_CALENDAR_ID` - ID календаря для синхронизации.
-- `GOOGLE_CREDENTIALS_FILE` - путь к JSON credentials service account.
+- `BOT_TOKEN` — токен Telegram-бота.
+- `ADMIN_ID` — Telegram ID администратора.
+- `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT` — параметры PostgreSQL.
+- `GOOGLE_CALENDAR_ID`, `GOOGLE_CREDENTIALS_FILE` — опциональная пара для Google Calendar sync.
+- `TUTORBOT_ROOT` — корень проекта для shell-скриптов и watcher.
+- `TUTORBOT_SERVICE_NAME` — имя `systemd`-сервиса.
+- `TUTORBOT_SYSTEMD_SCOPE` — `system` или `user`.
+- `TUTORBOT_BACKUP_DIR` — каталог для резервных копий PostgreSQL.
+
+## Development
+
+Установка dev-зависимостей:
+
+```bash
+make install-dev
+```
+
+Основные команды:
+
+```bash
+make validate-env
+make lint
+make typecheck
+make test
+make compile
+make check
+```
+
+`make check` — это единый quality gate: env validation, lint, mypy, pytest и compileall.
+
+## Quality Gate
+
+Перед релизом проект должен пройти:
+
+```bash
+make check
+```
+
+CI дублирует тот же набор через `.github/workflows/ci.yml`.
 
 ## Структура проекта
 
-- `app.py` - точка входа и запуск планировщика.
-- `handlers/` - обработчики сообщений и callback.
-- `keyboards/` - inline-клавиатуры.
-- `utils/` - работа с БД, календарём, текстом и scheduler.
-- `data/` - конфигурация и вспомогательные JSON-файлы.
-
-## Проверка
-
-Для базовой проверки можно запустить:
-
-```bash
-python -m unittest discover -s tests
-```
+- `app.py` — точка входа и запуск планировщика.
+- `handlers/` — обработчики сообщений и callback.
+- `keyboards/` — inline-клавиатуры.
+- `utils/` — БД, календарь, тексты, observability, scheduler.
+- `scripts/` — healthcheck, watcher, env validation, backup/restore, smoke check.
+- `data/` — конфигурация и runtime-артефакты.
+- `deploy/` — `systemd` и `logrotate`.
+- `tests/` — unit и flow-тесты.
 
 ## Deploy
 
-В репозитории лежат готовые артефакты для сервера:
+Файлы для продакшена:
 
-- `deploy/tutorbot.service` - unit для `systemd`
-- `deploy/logrotate/tutorbot` - конфиг ротации логов
-- `scripts/healthcheck.sh` - проверка живости бота и свежести ops status
-- `.env.example` - шаблон переменных окружения
+- `deploy/tutorbot.service`
+- `deploy/logrotate/tutorbot`
+- `scripts/healthcheck.sh`
+- `scripts/release_smoke.sh`
+- `scripts/db_backup.sh`
+- `scripts/db_restore.sh`
 
-Рекомендуемый порядок:
-
-1. Скопируйте `.env.example` в `.env` и заполните значения.
-2. Поместите Google credentials в путь из `GOOGLE_CREDENTIALS_FILE`.
-3. Скопируйте `deploy/tutorbot.service` в `/etc/systemd/system/tutorbot.service`.
-4. Скопируйте `deploy/logrotate/tutorbot` в `/etc/logrotate.d/tutorbot`.
-5. Включите сервис:
+Базовый deploy:
 
 ```bash
+sudo cp deploy/tutorbot.service /etc/systemd/system/tutorbot.service
+sudo cp deploy/logrotate/tutorbot /etc/logrotate.d/tutorbot
 sudo systemctl daemon-reload
 sudo systemctl enable --now tutorbot
 ```
 
-Проверку состояния можно запускать вручную:
+`deploy/tutorbot.service` теперь делает `ExecStartPre` через `scripts/validate_env.py`, поэтому сервис не стартует с битым конфигом.
+
+## Backup / Restore
+
+Резервная копия PostgreSQL:
 
 ```bash
-TUTORBOT_ROOT=/srv/tutorbot ./scripts/healthcheck.sh
+make backup
 ```
 
-Healthcheck проверяет:
+Восстановление PostgreSQL:
 
-- запущен ли процесс бота или сервис `tutorbot`
-- свежий ли `data/ops_status.json`
-- не истекло ли время последнего обновления ops status
-- не пуст ли `data/runtime_metrics.jsonl`, если файл уже создан
+```bash
+TUTORBOT_ALLOW_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
+```
+
+По умолчанию restore сначала делает свежий pre-restore backup. Если это не нужно:
+
+```bash
+TUTORBOT_ALLOW_RESTORE=1 TUTORBOT_SKIP_PRE_RESTORE_BACKUP=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
+```
+
+## Smoke Check
+
+После релиза:
+
+```bash
+make smoke
+```
+
+`make smoke` прогоняет:
+
+- `scripts/validate_env.py`
+- `scripts/healthcheck.sh`
+
+И затем стоит вручную проверить:
+
+1. `/start` у администратора.
+2. `/admin`.
+3. `/sync`.
+4. список учеников и одну карточку.
+5. выдачу короткого ДЗ.
+
+## Health / Runtime
+
+Текущее состояние бота отражается в:
+
+- `data/ops_status.json`
+- `data/runtime_metrics.jsonl`
+
+`scripts/healthcheck.sh` проверяет:
+
+- активный сервис или процесс бота;
+- валидность env-конфига;
+- наличие и свежесть `ops_status.json`;
+- непустой `runtime_metrics.jsonl`, если файл уже существует.
+
+## Release / Rollback
+
+Полный чеклист лежит в [RELEASE_CHECKLIST.md](/srv/tutorbot/RELEASE_CHECKLIST.md).
+
+Короткий порядок:
+
+1. `make backup`
+2. `make check`
+3. deploy
+4. `make smoke`
+5. если релиз не прошёл — rollback к предыдущему коду и при необходимости `db_restore.sh`

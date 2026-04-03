@@ -1,5 +1,8 @@
 import json
 import os
+from pathlib import Path
+from typing import cast
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,24 +16,30 @@ INTERNAL_TEST_ACCOUNT_RULES = [
     },
 ]
 
-BOT_TOKEN = str(os.getenv("BOT_TOKEN"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+BOT_TOKEN = str(os.getenv("BOT_TOKEN", "")).strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-PGUSER = str(os.getenv("PGUSER"))
-PGPASSWORD = str(os.getenv("PGPASSWORD"))
-DATABASE = str(os.getenv("DATABASE"))
-PGHOST = str(os.getenv("PGHOST"))
-PGPORT = str(os.getenv("PGPORT"))
+PGUSER = str(os.getenv("PGUSER", "")).strip()
+PGPASSWORD = str(os.getenv("PGPASSWORD", "")).strip()
+DATABASE = str(os.getenv("DATABASE", "")).strip()
+PGHOST = str(os.getenv("PGHOST", "")).strip()
+PGPORT = str(os.getenv("PGPORT", "")).strip()
 
 POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}"
 
-GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
+GOOGLE_CALENDAR_ID = str(os.getenv("GOOGLE_CALENDAR_ID", "")).strip()
 GOOGLE_CREDENTIALS_FILE = os.getenv(
     "GOOGLE_CREDENTIALS_FILE",
     "/home/deploy/.secrets/tutorbot/credentials.json",
-)
+).strip()
+TUTORBOT_ROOT = Path(os.getenv("TUTORBOT_ROOT", PROJECT_ROOT)).resolve()
+TUTORBOT_SERVICE_NAME = str(os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot")).strip() or "tutorbot"
+TUTORBOT_SYSTEMD_SCOPE = str(os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system")).strip() or "system"
+TUTORBOT_BACKUP_DIR = Path(os.getenv("TUTORBOT_BACKUP_DIR", TUTORBOT_ROOT / "backups")).resolve()
 
-_TEACHER_INFO_PATH = os.path.join(os.path.dirname(__file__), "teacher_info.json")
+_TEACHER_INFO_PATH = PROJECT_ROOT / "data" / "teacher_info.json"
 
 
 def load_teacher_info() -> dict:
@@ -38,7 +47,7 @@ def load_teacher_info() -> dict:
     Read on every call so edits take effect without restarting the bot.
     """
     try:
-        with open(_TEACHER_INFO_PATH, encoding="utf-8") as f:
+        with Path(_TEACHER_INFO_PATH).open(encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
@@ -59,13 +68,17 @@ def is_internal_test_account(
     normalized = normalize_person_name(full_name)
     tokens = set(normalized.split())
     for rule in INTERNAL_TEST_ACCOUNT_RULES:
-        if telegram_id is not None and telegram_id in rule.get("telegram_ids", set()):
+        telegram_ids = cast(set[int], rule.get("telegram_ids", set()))
+        usernames = cast(set[str], rule.get("usernames", set()))
+        surname = cast(str, rule.get("surname", ""))
+        names = cast(set[str], rule.get("names", set()))
+        if telegram_id is not None and telegram_id in telegram_ids:
             return True
-        if normalized_username and normalized_username in rule.get("usernames", set()):
+        if normalized_username and normalized_username in usernames:
             return True
-        if rule["surname"] in tokens and tokens.intersection(rule["names"]):
+        if surname in tokens and tokens.intersection(names):
             return True
-        if tokens and tokens.issubset(rule["names"]):
+        if tokens and tokens.issubset(names):
             return True
     return False
 
