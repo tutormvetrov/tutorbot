@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8,19 +9,28 @@ from apscheduler.triggers.cron import CronTrigger
 from data import config
 from data.config import load_teacher_info
 from keyboards.inline import (
+    make_back_button_keyboard,
     make_lesson_presence_keyboard,
+    make_lesson_followup_keyboard,
     make_teacher_reply_keyboard,
 )
 from utils.brand import choose_tone_variant
+from utils.homework_text import homework_body_html
 from utils.observability import update_job_status, update_ops_status, write_runtime_event
 from utils.reschedule import encode_reschedule_slot, find_next_free_reschedule_slots, format_reschedule_slot_label
 from utils.speech import choose_form
-from utils.ui_text import build_parent_weekly_digest_text
+from utils.time import business_naive_now, business_today
+from utils.ui_text import (
+    build_parent_weekly_digest_text,
+    build_teacher_bookmark_reminder_text,
+    build_teacher_lesson_followup_text,
+)
 
 if TYPE_CHECKING:
     from utils.db_api.postgresql import Database
 
 logger = logging.getLogger(__name__)
+LESSON_REMINDER_SEND_TIMEOUT_SECONDS = 20
 
 
 def _get_online_lesson_links() -> tuple[str, str]:
@@ -133,10 +143,16 @@ async def homework_reminder_job(bot, db: "Database"):
     for hw in items:
         try:
             deadline_str = hw['deadline'].strftime('%d.%m.%Y') if hw['deadline'] else '—'
+            homework_html = homework_body_html(
+                hw.get('title'),
+                hw.get('description'),
+                hw.get('attachment_name'),
+                hw.get('attachment_mime_type'),
+            ) or "—"
             await bot.send_message(
                 hw['telegram_id'],
                 f"⏰ <b>Напоминание о домашнем задании!</b>\n\n"
-                f"📝 {hw['title']}\n"
+                f"📝 Задание:\n{homework_html}\n"
                 f"📅 Срок сдачи: <b>завтра, {deadline_str}</b>\n\n"
                 f"{choose_form(hw.get('speech_style'), 'Не забудьте', 'Не забудь')} про это задание.",
                 reply_markup=make_teacher_reply_keyboard("homework", hw['id']),
@@ -183,7 +199,6 @@ async def homework_gap_check_job(bot, db: "Database"):
 
 async def lesson_reminder_job(bot, db: "Database"):
     """Напоминания о занятии: онлайн за ~10 минут, очно за ~1 час."""
-    from datetime import date
     lessons = await db.get_lessons_for_reminder()
     sent_count = 0
     vk_call_url, google_meet_url = _get_online_lesson_links()
@@ -196,7 +211,7 @@ async def lesson_reminder_job(bot, db: "Database"):
                 until_date = date.fromisoformat(
                     f"{until_str[6:10]}-{until_str[3:5]}-{until_str[0:2]}"
                 )
-                if date.today() <= until_date:
+                if business_today() <= until_date:
                     continue
                 else:
                     await db.set_lesson_reminders(lesson['telegram_id'], 'enabled')
@@ -224,10 +239,15 @@ async def lesson_reminder_job(bot, db: "Database"):
                     + "\n"
                 )
             message_text += "Чтобы отключить напоминания: Профиль → 🔔 Управление уведомлениями"
-            await bot.send_message(
-                lesson['telegram_id'],
-                message_text,
-                reply_markup=make_lesson_presence_keyboard(lesson['id']),
+            # Short timeout prevents one flaky Telegram request from blocking the
+            # whole reminder loop and skipping the next cron windows.
+            await asyncio.wait_for(
+                bot.send_message(
+                    lesson['telegram_id'],
+                    message_text,
+                    reply_markup=make_lesson_presence_keyboard(lesson['id']),
+                ),
+                timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
             )
             await db.mark_lesson_reminder_sent(lesson['id'])
             sent_count += 1
@@ -236,6 +256,61 @@ async def lesson_reminder_job(bot, db: "Database"):
             logger.warning(f"Ошибка напоминания об уроке {lesson['id']}: {e}")
     update_job_status("lesson_reminder", "ok", sent=sent_count, checked=len(lessons))
     write_runtime_event("lesson_reminder", "ok", sent=sent_count, checked=len(lessons))
+
+
+async def teacher_lesson_followup_job(bot, db: "Database"):
+    lessons = await db.get_lessons_for_teacher_followup()
+    sent_count = 0
+
+    if not config.ADMIN_ID:
+        update_job_status("teacher_lesson_followup", "ok", sent=0, checked=len(lessons))
+        write_runtime_event("teacher_lesson_followup", "ok", sent=0, checked=len(lessons))
+        return
+
+    for lesson in lessons:
+        try:
+            await asyncio.wait_for(
+                bot.send_message(
+                    config.ADMIN_ID,
+                    build_teacher_lesson_followup_text(lesson),
+                    reply_markup=make_lesson_followup_keyboard(lesson["id"], lesson["student_id"]),
+                ),
+                timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
+            )
+            await db.mark_teacher_followup_sent(lesson["id"])
+            sent_count += 1
+        except Exception as exc:
+            logger.warning("Ошибка teacher follow-up для урока %s: %s", lesson["id"], exc)
+
+    update_job_status("teacher_lesson_followup", "ok", sent=sent_count, checked=len(lessons))
+    write_runtime_event("teacher_lesson_followup", "ok", sent=sent_count, checked=len(lessons))
+
+
+async def teacher_bookmark_reminder_job(bot, db: "Database"):
+    lessons = await db.get_lessons_for_teacher_bookmark_reminder()
+    sent_count = 0
+
+    if not config.ADMIN_ID:
+        update_job_status("teacher_bookmark_reminder", "ok", sent=0, checked=len(lessons))
+        write_runtime_event("teacher_bookmark_reminder", "ok", sent=0, checked=len(lessons))
+        return
+
+    for lesson in lessons:
+        try:
+            await asyncio.wait_for(
+                bot.send_message(
+                    config.ADMIN_ID,
+                    build_teacher_bookmark_reminder_text(lesson),
+                ),
+                timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
+            )
+            await db.mark_teacher_pre_lesson_note_sent(lesson["id"])
+            sent_count += 1
+        except Exception as exc:
+            logger.warning("Ошибка teacher bookmark reminder для урока %s: %s", lesson["id"], exc)
+
+    update_job_status("teacher_bookmark_reminder", "ok", sent=sent_count, checked=len(lessons))
+    write_runtime_event("teacher_bookmark_reminder", "ok", sent=sent_count, checked=len(lessons))
 
 
 async def calendar_sync_job(bot, db: "Database"):
@@ -329,7 +404,7 @@ async def review_request_job(bot, db: "Database"):
 
 
 async def parent_weekly_digest_job(bot, db: "Database"):
-    period_end = datetime.now()
+    period_end = business_naive_now()
     period_start = period_end - timedelta(days=7)
     rows = await db.get_parent_weekly_digest_rows(period_start, period_end)
     if not rows:
@@ -352,6 +427,7 @@ async def parent_weekly_digest_job(bot, db: "Database"):
                 "had_lesson": row["had_lesson"],
                 "active_homework_count": row["active_homework_count"],
                 "lesson_balance": row["lesson_balance"],
+                "next_lesson_date": row.get("next_lesson_date"),
             }
         )
 
@@ -361,6 +437,7 @@ async def parent_weekly_digest_job(bot, db: "Database"):
             await bot.send_message(
                 parent_id,
                 build_parent_weekly_digest_text(payload["parent_name"], payload["items"]),
+                reply_markup=make_back_button_keyboard("👨‍👩‍👧 Мои дети", "parent:home"),
             )
             sent_count += 1
         except Exception as exc:
@@ -371,7 +448,7 @@ async def parent_weekly_digest_job(bot, db: "Database"):
 
 
 def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler = AsyncIOScheduler(timezone=config.TUTORBOT_TIMEZONE)
     scheduler.add_job(
         lesson_completion_job,
         CronTrigger(hour=0, minute=30),
@@ -420,6 +497,20 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="lesson_reminder",
         name="Напоминание о занятии (онлайн 10м, очно 60м)",
+    )
+    scheduler.add_job(
+        teacher_lesson_followup_job,
+        CronTrigger(minute="*/5"),
+        args=[bot, db],
+        id="teacher_lesson_followup",
+        name="Teacher follow-up после урока",
+    )
+    scheduler.add_job(
+        teacher_bookmark_reminder_job,
+        CronTrigger(minute="*/5"),
+        args=[bot, db],
+        id="teacher_bookmark_reminder",
+        name="Teacher reminder с закладкой перед уроком",
     )
     scheduler.add_job(
         parent_weekly_digest_job,

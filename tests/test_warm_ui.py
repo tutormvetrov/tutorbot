@@ -189,6 +189,7 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
         class FakeDB:
             def __init__(self):
                 self.calls = []
+                self.backfill_calls = []
 
             async def get_user(self, telegram_id):
                 return {
@@ -208,8 +209,24 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_active_lessons(self, student_id):
                 return [{"lesson_date": datetime(2026, 4, 5, 14, 0)}]
 
-            async def add_homework(self, student_id, title, description, deadline):
-                self.calls.append((student_id, title, description, deadline))
+            async def backfill_homework_materials_for_student(self, student_id):
+                self.backfill_calls.append(student_id)
+                return 0
+
+            async def get_recent_homework_material_mentions(self, student_id):
+                return []
+
+            async def get_top_homework_materials(self, student_id):
+                return []
+
+            async def get_latest_homework_material_mention(self, student_id):
+                return None
+
+            async def has_homework_history(self, student_id):
+                return False
+
+            async def add_homework(self, student_id, title, description, deadline, attachment=None):
+                self.calls.append((student_id, title, description, deadline, attachment))
                 return 777
 
         bot = DummyBot()
@@ -224,8 +241,9 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
         state = DummyState()
         db = FakeDB()
 
-        await admin_add_homework_quick(callback, state)
+        await admin_add_homework_quick(callback, state, db)
         self.assertEqual(state.data["admin_return_view"], "admin:student_card:555:1")
+        self.assertEqual(db.backfill_calls, [555])
 
         hw_message = DummyMessage(
             "Сделайте <a href=\"https://example.com\">упражнение</a> и пришлите результат.",
@@ -243,6 +261,97 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bot.edited_messages)
         self.assertIn("Иван Петров", bot.edited_messages[-1].text)
         self.assertIn("Домашнее задание отправлено", deadline_message.answers[-1])
+        self.assertIn("📝 Задание:\n", deadline_message.answers[-1])
+        self.assertNotIn("📄", bot.sent_messages[0].text)
+
+    async def test_admin_quick_homework_shows_material_summary_before_description(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Наталья Пименова",
+                    "role": "student",
+                    "is_active": True,
+                    "language": "Французский",
+                    "level": "A2",
+                    "lesson_format": "online",
+                    "lesson_reminders": "enabled",
+                }
+
+            async def backfill_homework_materials_for_student(self, student_id):
+                return 2
+
+            async def get_recent_homework_material_mentions(self, student_id):
+                return [
+                    {
+                        "material_title": "Le cahier d’activités — Cosmopolite 1",
+                        "material_key": "cosmopolite 1",
+                        "page_from": 44,
+                        "page_to": 45,
+                        "exercise_label": "Ex. 1-4",
+                        "homework_created_at": datetime(2026, 4, 4, 19, 30),
+                    }
+                ]
+
+            async def get_top_homework_materials(self, student_id):
+                return [{"material_title": "Cosmopolite 1", "mentions_count": 3}]
+
+            async def get_latest_homework_material_mention(self, student_id):
+                return {
+                    "material_title": "Le cahier d’activités — Cosmopolite 1",
+                    "material_key": "cosmopolite 1",
+                    "page_from": 44,
+                    "page_to": 45,
+                }
+
+            async def has_homework_history(self, student_id):
+                return True
+
+        bot = DummyBot()
+        message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot, chat_id=901, message_id=79)
+        callback = DummyCallbackQuery(
+            "admin:quick:add_homework:555:1",
+            message=message,
+            user_id=config.ADMIN_ID,
+            full_name="Admin",
+            bot=bot,
+        )
+        state = DummyState()
+
+        await admin_add_homework_quick(callback, state, FakeDB())
+
+        self.assertEqual(state.state.state, "AdminAddHomework:waiting_for_description")
+        self.assertIn("По прошлым ДЗ", message.edits[-1])
+        self.assertIn("Чаще всего", message.edits[-1])
+        self.assertIn("Подсказка", message.edits[-1])
+        self.assertIn("Cosmopolite 1", message.edits[-1])
+
+    async def test_admin_quick_homework_falls_back_to_plain_prompt_when_stats_fail(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "full_name": "Иван Петров"}
+
+            async def backfill_homework_materials_for_student(self, student_id):
+                raise RuntimeError("boom")
+
+        bot = DummyBot()
+        message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot, chat_id=901, message_id=80)
+        callback = DummyCallbackQuery(
+            "admin:quick:add_homework:555:1",
+            message=message,
+            user_id=config.ADMIN_ID,
+            full_name="Admin",
+            bot=bot,
+        )
+        state = DummyState()
+
+        await admin_add_homework_quick(callback, state, FakeDB())
+
+        self.assertEqual(
+            message.edits[-1],
+            "📝 Отправьте <b>текст домашнего задания</b> или прикрепите <b>PDF/DOCX</b>.\n\n"
+            "Можно добавить подпись, ссылки и форматирование.",
+        )
 
     async def test_admin_quick_lesson_restores_student_card(self):
         class FakeDB:

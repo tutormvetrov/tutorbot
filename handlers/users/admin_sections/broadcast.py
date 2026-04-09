@@ -4,7 +4,6 @@ from aiogram.fsm.context import FSMContext
 
 from utils.brand import choose_tone_variant
 from keyboards.inline import (
-    back_to_admin_keyboard,
     broadcast_keyboard,
     broadcast_preview_keyboard,
     cancel_fsm_keyboard,
@@ -22,7 +21,7 @@ from utils.ui_text import (
     ADMIN_BROADCAST_ENTER_TEXT,
     ADMIN_BROADCAST_START_TEXT,
     admin_broadcast_recipients_text,
-    build_broadcast_preview_text,
+    build_broadcast_preview_block,
     build_broadcast_send_result_text,
 )
 
@@ -83,12 +82,25 @@ def _resolve_broadcast_text(kind: str | None, speech_style: str | None, fallback
         return template
     return fallback_text
 
+def _build_recipient_select_text(
+    broadcast_preview: str,
+    selected_count: int,
+    total_count: int,
+    broadcast_mode: str = "text",
+) -> str:
+    return admin_broadcast_recipients_text(
+        broadcast_preview,
+        selected_count,
+        total_count,
+        mode=broadcast_mode,
+    )
+
 
 async def _enter_recipient_select(target, state: FSMContext, db: Database, broadcast_preview: str):
     students = await db.get_all_students()
     if not students:
         msg = ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT
-        back_kb = make_back_button_keyboard("◀️ К коммуникациям", "admin:cat:communication")
+        back_kb = make_back_button_keyboard("◀️ К панели", "admin:home")
         if hasattr(target, 'message'):
             await target.message.edit_text(msg, reply_markup=back_kb)
             await target.answer()
@@ -97,7 +109,6 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
         await state.clear()
         return
 
-    all_ids = [student['telegram_id'] for student in students]
     cache = [
         {
             'telegram_id': student['telegram_id'],
@@ -106,12 +117,18 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
         }
         for student in students
     ]
-    await state.update_data(recipient_ids=all_ids, students_cache=cache)
+    await state.update_data(recipient_ids=[], students_cache=cache)
     await state.set_state(AdminBroadcast.waiting_for_recipients)
 
-    total = len(all_ids)
-    text = admin_broadcast_recipients_text(broadcast_preview, total, total)
-    kb = make_recipient_select_keyboard(cache, set(all_ids))
+    total = len(cache)
+    data = await state.get_data()
+    text = _build_recipient_select_text(
+        broadcast_preview,
+        0,
+        total,
+        data.get("broadcast_mode", "text"),
+    )
+    kb = make_recipient_select_keyboard(cache, set())
     if hasattr(target, 'message'):
         await target.message.edit_text(text, reply_markup=kb)
         await target.answer()
@@ -121,7 +138,14 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
 
 async def _show_broadcast_preview(target, state: FSMContext, broadcast_preview: str):
     await state.set_state(AdminBroadcast.waiting_for_text_confirm)
-    text = build_broadcast_preview_text(broadcast_preview)
+    data = await state.get_data()
+    mode = data.get("broadcast_mode", "text")
+    text = (
+        "📢 <b>Предпросмотр рассылки</b>\n\n"
+        "Именно так сообщение увидят выбранные ученики:\n\n"
+        f"{build_broadcast_preview_block(mode, broadcast_preview)}\n\n"
+        "Если всё выглядит хорошо, можно перейти к выбору получателей."
+    )
     if hasattr(target, "message"):
         await target.message.edit_text(text, reply_markup=broadcast_preview_keyboard)
         await target.answer()
@@ -151,7 +175,7 @@ async def admin_broadcast_select(callback_query: types.CallbackQuery, state: FSM
     origin_chat_id, origin_message_id = get_message_origin(callback_query.message, callback_query.from_user.id)
     await state.clear()
     await state.update_data(
-        admin_return_view="admin:cat:communication",
+        admin_return_view="admin:home",
         admin_origin_chat_id=origin_chat_id,
         admin_origin_message_id=origin_message_id,
     )
@@ -260,7 +284,12 @@ async def bc_toggle_recipient(callback_query: types.CallbackQuery, state: FSMCon
 
     students = data.get('students_cache', [])
     broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text', '')
-    text = admin_broadcast_recipients_text(broadcast_preview, len(selected), len(students))
+    text = _build_recipient_select_text(
+        broadcast_preview,
+        len(selected),
+        len(students),
+        data.get("broadcast_mode", "text"),
+    )
     await callback_query.message.edit_text(text, reply_markup=make_recipient_select_keyboard(students, selected))
     await callback_query.answer()
 
@@ -280,7 +309,12 @@ async def bc_select_all_none(callback_query: types.CallbackQuery, state: FSMCont
     await state.update_data(recipient_ids=list(selected))
 
     broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text', '')
-    text = admin_broadcast_recipients_text(broadcast_preview, len(selected), len(students))
+    text = _build_recipient_select_text(
+        broadcast_preview,
+        len(selected),
+        len(students),
+        data.get("broadcast_mode", "text"),
+    )
     await callback_query.message.edit_text(text, reply_markup=make_recipient_select_keyboard(students, selected))
     await callback_query.answer()
 
@@ -350,6 +384,6 @@ async def bc_send(callback_query: types.CallbackQuery, state: FSMContext, db: Da
 
     await callback_query.message.edit_text(
         build_broadcast_send_result_text(sent, len(selected_ids)),
-        reply_markup=make_back_button_keyboard("◀️ К коммуникациям", "admin:cat:communication"),
+        reply_markup=make_back_button_keyboard("◀️ К панели", "admin:home"),
     )
     await callback_query.answer()

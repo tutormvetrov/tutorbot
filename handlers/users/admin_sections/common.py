@@ -2,6 +2,7 @@ from aiogram import html, types
 
 from data import config
 from data.config import load_teacher_info
+from keyboards.inline import make_back_button_keyboard
 from utils.brand import choose_tone_variant
 from utils.speech import choose_form
 
@@ -30,10 +31,40 @@ def message_or_caption_to_html(message: types.Message) -> str:
     if not raw:
         return ""
     if message.entities or getattr(message, "caption_entities", None):
-        formatted = (message.html_text or "").strip()
+        formatted = (getattr(message, "html_text", "") or "").strip()
         if formatted:
             return formatted
     return html.quote(raw)
+
+
+def extract_homework_payload(message: types.Message) -> dict | None:
+    description = message_or_caption_to_html(message)
+    attachment = None
+    if message.document:
+        attachment = {
+            "file_id": message.document.file_id,
+            "file_unique_id": message.document.file_unique_id,
+            "file_name": message.document.file_name,
+            "mime_type": message.document.mime_type,
+        }
+
+    if not description and not attachment:
+        return None
+
+    return {
+        "description": description,
+        "attachment": attachment,
+    }
+
+
+def parse_admin_student_picker_callback_data(callback_data: str) -> tuple[str, int, int]:
+    parts = callback_data.split(":")
+    if len(parts) != 5 or parts[0] != "admin" or parts[1] != "student_pick_select":
+        raise ValueError(f"Unsupported admin student picker callback: {callback_data}")
+    flow = parts[2]
+    student_id = int(parts[3])
+    page = int(parts[4])
+    return flow, student_id, page
 
 
 def extract_broadcast_payload(message: types.Message) -> dict | None:
@@ -128,6 +159,35 @@ def get_message_origin(message: types.Message, fallback_chat_id: int | None = No
     return chat_id, message_id
 
 
+ADMIN_STUDENT_PICKER_PAGE_SIZE = 5
+
+
+def admin_picker_back_view(flow: str) -> str:
+    if flow == "calendar_aliases":
+        return "admin:service:monitoring"
+    if flow in {"preview_student", "preview_parent"}:
+        return "admin:preview"
+    return "admin:cat:education"
+
+
+async def render_admin_student_picker(message: types.Message, db, flow: str, page: int = 0):
+    from keyboards.inline import make_admin_student_picker_keyboard
+    from utils.ui_text import build_admin_student_picker_text
+
+    students = await db.get_students_overview()
+    if not students:
+        await message.edit_text(
+            "⚠️ Нет зарегистрированных учеников.",
+            reply_markup=make_back_button_keyboard("◀️ Назад", admin_picker_back_view(flow)),
+        )
+        return
+
+    await message.edit_text(
+        build_admin_student_picker_text(students, page, ADMIN_STUDENT_PICKER_PAGE_SIZE, flow),
+        reply_markup=make_admin_student_picker_keyboard(students, flow, page, ADMIN_STUDENT_PICKER_PAGE_SIZE),
+    )
+
+
 async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | None, view: str | None):
     if not view or chat_id is None or message_id is None:
         return False
@@ -154,11 +214,66 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         await _render_admin_student_card(target, db, int(student_id_str), int(page_str))
         return True
 
+    if view.startswith("admin:student_actions:"):
+        from handlers.users.admin_sections.students import _render_admin_student_actions
+
+        _, _, student_id_str, page_str = view.split(":")
+        await _render_admin_student_actions(target, db, int(student_id_str), int(page_str))
+        return True
+
+    if view.startswith("admin:student_settings:"):
+        from handlers.users.admin_sections.students import _render_admin_student_settings
+
+        _, _, student_id_str, page_str = view.split(":")
+        await _render_admin_student_settings(target, db, int(student_id_str), int(page_str))
+        return True
+
+    if view.startswith("admin:student_danger:"):
+        from handlers.users.admin_sections.students import _render_admin_student_danger
+
+        _, _, student_id_str, page_str = view.split(":")
+        await _render_admin_student_danger(target, db, int(student_id_str), int(page_str))
+        return True
+
     if view.startswith("admin:students:page:"):
         from handlers.users.admin_sections.students import _render_admin_students_page
 
         page = int(view.split(":")[3])
         await _render_admin_students_page(target, db, page=page)
+        return True
+
+    if view == "admin:parents":
+        from handlers.users.admin_sections.parents import _render_admin_parents_page
+
+        await _render_admin_parents_page(target, db, page=0)
+        return True
+
+    if view.startswith("admin:parents:page:"):
+        from handlers.users.admin_sections.parents import _render_admin_parents_page
+
+        page = int(view.split(":")[3])
+        await _render_admin_parents_page(target, db, page=page)
+        return True
+
+    if view.startswith("admin:parent_card:"):
+        from handlers.users.admin_sections.parents import _render_admin_parent_card
+
+        _, _, parent_id_str, page_str = view.split(":")
+        await _render_admin_parent_card(target, db, int(parent_id_str), int(page_str))
+        return True
+
+    if view.startswith("admin:parent_danger:"):
+        from handlers.users.admin_sections.parents import _render_admin_parent_danger
+
+        _, _, parent_id_str, page_str = view.split(":")
+        await _render_admin_parent_danger(target, db, int(parent_id_str), int(page_str))
+        return True
+
+    if view.startswith("admin:student_pick:"):
+        parts = view.split(":")
+        flow = parts[2]
+        page = int(parts[3]) if len(parts) > 3 else 0
+        await render_admin_student_picker(target, db, flow=flow, page=page)
         return True
 
     if view.startswith("admin:student_payments:"):
@@ -167,13 +282,26 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         parts = view.split(":")
         student_id = int(parts[2])
         page = int(parts[3]) if len(parts) > 3 else None
-        await _render_admin_payments(target, db, student_id, page=page)
+        source = parts[4] if len(parts) > 4 else "card"
+        await _render_admin_payments(target, db, student_id, page=page, source=source)
         return True
 
     if view == "admin:all_homework":
         from handlers.users.admin_sections.homework import _render_admin_homework_list
 
         await _render_admin_homework_list(target, db)
+        return True
+
+    if view == "admin:service:monitoring":
+        from handlers.users.admin import render_admin_service_monitoring
+
+        await render_admin_service_monitoring(target)
+        return True
+
+    if view == "admin:service:context":
+        from handlers.users.admin import render_admin_service_context
+
+        await render_admin_service_context(target)
         return True
 
     return False

@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from data import config
 from keyboards.inline import admin_notes_keyboard, cancel_fsm_keyboard, make_back_button_keyboard
 from states.registration import AdminNotes
+from utils.time import business_now, business_timestamp_label
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ CLAUDE_DOC_FILE = PROJECT_ROOT / "CLAUDE.md"
 AGENT_CONTEXT_FILE = PROJECT_ROOT / "AGENT_CONTEXT.md"
 DEBUG_CONTEXT_LOG_FILE = PROJECT_ROOT / "data" / "debug_context.jsonl"
 DEBUG_MEDIA_DIR = PROJECT_ROOT / "data" / "debug_media"
-SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К сервису", "admin:cat:service")
+SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К контексту", "admin:service:context")
 
 
 def _is_admin(user_id: int) -> bool:
@@ -44,7 +45,7 @@ def _save_notes(notes: list):
 
 def _append_debug_context_event(event_type: str, note: dict | None = None, notes_count: int | None = None):
     payload = {
-        "ts": datetime.now().isoformat(timespec="seconds"),
+        "ts": business_now().isoformat(timespec="seconds"),
         "event": event_type,
         "notes_count": notes_count,
     }
@@ -163,11 +164,11 @@ def _sync_notes_to_agent_context(notes: list):
         "",
         "## Где смотреть полную историю",
         "",
-        "- `data/admin_notes.json` — текущее состояние сообщений для отладки",
+        "- `data/admin_notes.json` — текущее состояние рабочих заметок",
         "- `data/debug_context.jsonl` — журнал изменений",
         "- `CLAUDE.md` — рабочая сводка проекта",
         "",
-        "## Активные сообщения для отладки",
+        "## Активные рабочие заметки",
         "",
     ]
     if notes:
@@ -200,7 +201,7 @@ async def _save_message_image(message: types.Message) -> dict | None:
 
     file = await message.bot.get_file(file_id)
     suffix = Path(file.file_path or fallback_name).suffix or Path(fallback_name).suffix or ".jpg"
-    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}{suffix}"
+    filename = f"{business_now().strftime('%Y%m%d_%H%M%S')}_{unique_id}{suffix}"
     destination = DEBUG_MEDIA_DIR / filename
     DEBUG_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     await message.bot.download_file(file.file_path, destination=destination)
@@ -213,7 +214,7 @@ async def _save_message_image(message: types.Message) -> dict | None:
 
 
 async def _build_note_from_message(message: types.Message) -> dict | None:
-    timestamp = datetime.now().strftime("%d.%m.%Y %H:%M МСК")
+    timestamp = business_timestamp_label(fmt="%d.%m.%Y %H:%M")
     content = (message.text or message.caption or "").strip()
     image_meta = await _save_message_image(message)
     if image_meta is not None:

@@ -6,14 +6,21 @@ from aiogram.types import Message, CallbackQuery
 
 from data import config
 from data.config import load_teacher_info, is_internal_test_account
+from handlers.users.screens import get_user_home_payload
 from keyboards.inline import (
-    role_keyboard, main_keyboard, level_keyboard,
-    cancel_fsm_keyboard, make_post_registration_keyboard, level_test_prompt_keyboard,
+    admin_keyboard,
+    role_keyboard,
+    parent_main_keyboard,
+    level_keyboard,
+    cancel_fsm_keyboard,
+    make_post_registration_keyboard,
 )
 from states.registration import Registration
 from utils.db_api.postgresql import Database
+from utils.google_calendar import load_last_sync_report
+from utils.observability import load_ops_status
 from utils.text_utils import normalize_language, parse_age
-from utils.ui_text import MAIN_MENU_TEXT
+from utils.ui_text import build_admin_dashboard_text
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -37,11 +44,12 @@ async def _register_admin(message: Message, db: Database):
             message.from_user.full_name,
             message.from_user.username,
         )
+    snapshot = await db.get_admin_dashboard_snapshot()
+    ops_status = load_ops_status()
+    sync_report = load_last_sync_report()
     await message.answer(
-        "✅ Вы вошли как <b>преподаватель и администратор</b>.\n"
-        "Используйте /admin для панели управления.\n\n"
-        f"{MAIN_MENU_TEXT}",
-        reply_markup=main_keyboard,
+        build_admin_dashboard_text(snapshot, ops_status, sync_report),
+        reply_markup=admin_keyboard,
     )
 
 
@@ -58,18 +66,15 @@ async def command_start(message: Message, state: FSMContext, db: Database):
     user = await db.get_user(user_id)
 
     if not user:
+        await state.set_state(Registration.waiting_for_role)
         await message.answer(
             "👋 <b>Добро пожаловать!</b>\n\n"
             "Пожалуйста, выберите вашу роль:",
             reply_markup=role_keyboard,
         )
     else:
-        full_name = html.quote(user["full_name"])
-        await message.answer(
-            f"👋 С возвращением, <b>{full_name}</b>!\n\n"
-            f"{MAIN_MENU_TEXT}",
-            reply_markup=main_keyboard,
-        )
+        text, keyboard = await get_user_home_payload(db, user_id)
+        await message.answer(text, reply_markup=keyboard)
 
 
 # ─── Role selected ────────────────────────────────────────────────────────────
@@ -77,7 +82,7 @@ async def command_start(message: Message, state: FSMContext, db: Database):
 @router.callback_query(F.data.startswith("role:"))
 async def process_role_choice(callback_query: CallbackQuery, state: FSMContext):
     role = callback_query.data.split(":")[1]
-    total = 5 if role == "student" else 4
+    total = 5
     await state.update_data(role=role, reg_total=total)
     await state.set_state(Registration.waiting_for_full_name)
     await callback_query.message.edit_text(
@@ -132,12 +137,11 @@ async def process_age(message: Message, state: FSMContext):
     await state.update_data(age=age)
 
     if role == "parent":
-        await state.set_state(Registration.waiting_for_student_info)
+        await state.set_state(Registration.waiting_for_child_name)
         await message.answer(
             f"✅ Возраст: <b>{age} лет</b>\n\n"
-            "Введите информацию о вашем ребёнке:\n"
-            "<b>Имя Фамилия, возраст</b>\n\n"
-            f"Например: <i>Анна Петрова, 14</i>{_progress(3, total)}",
+            "Как зовут ребёнка?\n\n"
+            f"Например: <code>Анна Петрова</code>{_progress(3, total)}",
             reply_markup=cancel_fsm_keyboard,
         )
     else:
@@ -264,18 +268,117 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 {safe_full_name}  •  🎂 {data.get('age')} лет\n"
         f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
-        f"{contacts_text}",
-        reply_markup=make_post_registration_keyboard(booking_url, website_url),
-    )
-    await callback_query.message.answer(
-        "🧪 Хотите пройти тест на определение вашего текущего уровня знаний по "
-        "английскому или французскому языку?",
-        reply_markup=level_test_prompt_keyboard,
+        f"{contacts_text}\n\n"
+        "Если готовы, ниже есть тест уровня.",
+        reply_markup=make_post_registration_keyboard(
+            booking_url,
+            website_url,
+            include_level_test=True,
+        ),
     )
     await callback_query.answer()
 
 
 # ─── Parent: child info ────────────────────────────────────────────────────────
+
+
+async def _finish_parent_registration(
+    message: Message,
+    state: FSMContext,
+    db: Database,
+    student_name: str,
+    student_age: int,
+):
+    data = await state.get_data()
+    full_name = data["full_name"]
+    is_internal_account = is_internal_test_account(
+        full_name=full_name,
+        username=message.from_user.username or "",
+        telegram_id=message.from_user.id,
+    )
+
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (telegram_id, full_name, username, role, age, is_internal_account)
+            VALUES ($1, $2, $3, 'parent', $4, $5)
+            ON CONFLICT (telegram_id) DO UPDATE
+            SET full_name = EXCLUDED.full_name,
+                username = EXCLUDED.username,
+                role = EXCLUDED.role,
+                age = EXCLUDED.age,
+                is_internal_account = EXCLUDED.is_internal_account,
+                is_active = true
+            """,
+            message.from_user.id,
+            full_name,
+            message.from_user.username,
+            data.get("age"),
+            is_internal_account,
+        )
+
+    find_active_student = getattr(db, "find_active_student_by_name", None)
+    linked_student = await find_active_student(student_name) if callable(find_active_student) else None
+    upsert_parent_link = getattr(db, "upsert_parent_student_link", None)
+    if callable(upsert_parent_link):
+        await upsert_parent_link(
+            parent_id=message.from_user.id,
+            student_info=f"{student_name} ({student_age})",
+            student_id=linked_student["telegram_id"] if linked_student else None,
+        )
+
+    await state.clear()
+    await message.answer(
+        f"✅ <b>Регистрация завершена!</b>\n\n"
+        f"👤 Вы: {html.quote(full_name)}\n"
+        f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет.\n\n"
+        f"{'✅ Связь с учеником найдена.' if linked_student else '⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика.'}",
+        reply_markup=parent_main_keyboard,
+    )
+
+
+@router.message(StateFilter(Registration.waiting_for_child_name))
+async def process_child_name(message: Message, state: FSMContext):
+    child_name = (message.text or "").strip()
+    if len(child_name) < 2:
+        await message.answer(
+            "⚠️ Введите имя и фамилию ребёнка.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    total = (await state.get_data()).get("reg_total", 5)
+    await state.update_data(child_name=child_name)
+    await state.set_state(Registration.waiting_for_child_age)
+    await message.answer(
+        f"✅ Ребёнок: <b>{html.quote(child_name)}</b>\n\n"
+        f"Сколько ему лет?\n\n"
+        f"Например: <code>14</code>{_progress(4, total)}",
+        reply_markup=cancel_fsm_keyboard,
+    )
+
+
+@router.message(StateFilter(Registration.waiting_for_child_age))
+async def process_child_age(message: Message, state: FSMContext, db: Database):
+    child_age = parse_age((message.text or "").strip())
+    if child_age is None:
+        await message.answer(
+            "⚠️ Не удалось распознать возраст ребёнка. Введите число или возраст словами.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    child_name = (await state.get_data()).get("child_name", "").strip()
+    if not child_name:
+        await state.set_state(Registration.waiting_for_child_name)
+        await message.answer(
+            "⚠️ Сначала укажите имя ребёнка.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    await _finish_parent_registration(message, state, db, child_name, child_age)
+
 
 @router.message(StateFilter(Registration.waiting_for_student_info))
 async def process_student_info(message: Message, state: FSMContext, db: Database):
@@ -289,56 +392,13 @@ async def process_student_info(message: Message, state: FSMContext, db: Database
         return
 
     student_name = parts[0].strip()
-    student_age = parts[1].strip()
-    data = await state.get_data()
-    full_name = data["full_name"]
-    is_internal_account = is_internal_test_account(
-        full_name=full_name,
-        username=message.from_user.username or "",
-        telegram_id=message.from_user.id,
-    )
-
-    async with db.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO users (telegram_id, full_name, username, role, is_internal_account)
-            VALUES ($1, $2, $3, 'parent', $4)
-            ON CONFLICT (telegram_id) DO UPDATE
-            SET full_name = EXCLUDED.full_name,
-                username = EXCLUDED.username,
-                role = EXCLUDED.role,
-                is_internal_account = EXCLUDED.is_internal_account,
-                is_active = true
-            """,
-            message.from_user.id,
-            full_name,
-            message.from_user.username,
-            is_internal_account,
+    student_age = parse_age(parts[1].strip())
+    if student_age is None:
+        await message.answer(
+            "⚠️ Не удалось распознать возраст ребёнка. Введите данные так:\n"
+            "<b>Анна Петрова, 14</b>",
+            reply_markup=cancel_fsm_keyboard,
         )
+        return
 
-    find_active_student = getattr(db, "find_active_student_by_name", None)
-    upsert_parent_link = getattr(db, "upsert_parent_student_link", None)
-    if callable(upsert_parent_link):
-        linked_student = await find_active_student(student_name) if callable(find_active_student) else None
-        await upsert_parent_link(
-            parent_id=message.from_user.id,
-            student_info=f"{student_name} ({student_age})",
-            student_id=linked_student["telegram_id"] if linked_student else None,
-        )
-
-    await state.clear()
-    safe_full_name = html.quote(full_name)
-    safe_student_name = html.quote(student_name)
-    safe_student_age = html.quote(student_age)
-    await message.answer(
-        f"✅ <b>Регистрация завершена!</b>\n\n"
-        f"👤 Вы: {safe_full_name}\n"
-        f"👧 Ребёнок: {safe_student_name}, {safe_student_age} лет.\n\n"
-        f"{MAIN_MENU_TEXT}",
-        reply_markup=main_keyboard,
-    )
-    await message.answer(
-        "🧪 Хотите пройти тест на определение вашего текущего уровня знаний по "
-        "английскому или французскому языку?",
-        reply_markup=level_test_prompt_keyboard,
-    )
+    await _finish_parent_registration(message, state, db, student_name, student_age)

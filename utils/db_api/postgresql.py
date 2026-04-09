@@ -1,7 +1,4 @@
-from typing import Optional, Union
-
 import asyncpg
-from asyncpg import Connection
 from asyncpg.pool import Pool
 
 from data import config
@@ -22,7 +19,7 @@ class Database(
     DatabasePaymentMixin,
 ):
     def __init__(self):
-        self.pool: Union[Pool, None] = None
+        self.pool: Pool | None = None
 
     async def create_pool(self):
         self.pool = await asyncpg.create_pool(
@@ -31,7 +28,7 @@ class Database(
             host=config.PGHOST,
             port=int(config.PGPORT),
             database=config.DATABASE,
-            server_settings={"TimeZone": "Europe/Moscow"},
+            server_settings={"TimeZone": config.TUTORBOT_TIMEZONE},
         )
 
     async def execute(
@@ -43,8 +40,11 @@ class Database(
         fetchrow: bool = False,
         execute: bool = False,
     ):
-        async with self.pool.acquire() as connection:
-            connection: Connection
+        pool = self.pool
+        if pool is None:
+            raise RuntimeError("Database pool is not initialized.")
+
+        async with pool.acquire() as connection:
             async with connection.transaction():
                 if fetch:
                     result = await connection.fetch(command, *args)

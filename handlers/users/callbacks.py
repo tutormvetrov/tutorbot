@@ -7,22 +7,35 @@ from aiogram.fsm.context import FSMContext
 from data import config
 from data.config import load_teacher_info
 from handlers.users.admin_sections.common import restore_admin_view
+from handlers.users.screens import render_profile_screen, render_user_home
 from keyboards.inline import (
-    main_keyboard, freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
+    freeze_keyboard, back_to_menu_keyboard, back_to_admin_keyboard,
     cancel_fsm_keyboard, make_freeze_confirm_keyboard, FREEZE_REASON_LABELS,
     payment_keyboard, make_homework_filter_keyboard,
-    make_homework_list_keyboard, make_contacts_keyboard,
+    make_homework_item_keyboard, make_homework_list_keyboard, make_contacts_keyboard,
     make_notifications_keyboard, profile_keyboard,
-    parent_profile_keyboard,
-    make_level_test_link_keyboard, make_self_delete_confirm_keyboard,
+    make_parent_child_keyboard, make_parent_homework_keyboard, make_parent_homework_item_keyboard,
+    make_parent_payments_keyboard, make_level_test_link_keyboard, make_profile_danger_keyboard,
+    make_self_delete_confirm_keyboard, make_self_delete_review_keyboard,
     make_teacher_reply_keyboard, make_write_to_student_keyboard, make_back_button_keyboard,
 )
 from states.registration import FreezeConfirm, StudentReply
 from utils.db_api.postgresql import Database
+from utils.homework_text import homework_body_html, homework_preview_text
+from utils.preview_mode import (
+    PREVIEW_BLOCKED_ALERT,
+    apply_preview_to_payload,
+    get_preview_context,
+    get_preview_parent_child_homework,
+    get_preview_parent_child_link,
+    get_preview_parent_child_payments,
+    get_preview_parent_child_schedule,
+    is_synthetic_parent_preview,
+)
 from utils.reschedule import decode_reschedule_slot, format_reschedule_slot_label
+from utils.time import business_today
 from utils.ui_text import (
     ACTION_CANCELLED_TEXT,
-    MAIN_MENU_TEXT,
     REGISTRATION_REQUIRED_TEXT,
     build_action_result_text,
     build_contacts_text,
@@ -31,10 +44,11 @@ from utils.ui_text import (
     build_freeze_success_text,
     build_homework_text,
     build_notifications_text,
+    build_parent_child_hub_text,
     build_payment_text,
-    build_profile_text,
     build_requisites_text,
     build_schedule_text,
+    build_self_delete_final_warning_text,
     build_self_delete_success_text,
     build_self_delete_warning_text,
 )
@@ -64,12 +78,101 @@ def _build_self_delete_warning(user, snapshot: dict) -> str:
     return build_self_delete_warning_text(user, snapshot)
 
 
+async def _resolve_actor_context(db: Database, actor_id: int):
+    preview = await get_preview_context(db, actor_id)
+    if preview:
+        return preview["target_id"], preview["user"], preview
+    get_user = getattr(db, "get_user", None)
+    user = await get_user(actor_id) if callable(get_user) else None
+    return actor_id, user, None
+
+
+async def _edit_text_for_actor(message: types.Message, text: str, reply_markup, preview: dict | None):
+    text, reply_markup = apply_preview_to_payload(text, reply_markup, preview)
+    await message.edit_text(text, reply_markup=reply_markup)
+
+
+def _message_needs_reply_prompt_fallback(message: types.Message) -> bool:
+    return any(
+        getattr(message, field, None)
+        for field in ("sticker", "photo", "video", "document", "voice", "animation")
+    )
+
+
+async def _open_reply_prompt(message: types.Message, text: str):
+    if _message_needs_reply_prompt_fallback(message):
+        await message.answer(text, reply_markup=cancel_fsm_keyboard)
+        return
+
+    try:
+        await message.edit_text(text, reply_markup=cancel_fsm_keyboard)
+    except Exception:
+        logger.warning("Failed to open reply prompt via edit_text, using answer() instead", exc_info=True)
+        await message.answer(text, reply_markup=cancel_fsm_keyboard)
+
+
+async def _block_preview_action(callback_query: types.CallbackQuery, db: Database, *, clear_state: FSMContext | None = None) -> bool:
+    preview = await get_preview_context(db, callback_query.from_user.id)
+    if not preview:
+        return False
+    if clear_state is not None:
+        await clear_state.clear()
+    await callback_query.answer(PREVIEW_BLOCKED_ALERT, show_alert=True)
+    return True
+
+
+async def _get_parent_child_link(
+    db: Database,
+    parent_id: int,
+    link_id: int,
+    preview: dict | None = None,
+):
+    if is_synthetic_parent_preview(preview):
+        return await get_preview_parent_child_link(db, preview, link_id)
+    return await db.get_parent_child_link(parent_id, link_id)
+
+
+async def _get_parent_child_schedule(
+    db: Database,
+    parent_id: int,
+    link_id: int,
+    preview: dict | None = None,
+):
+    if is_synthetic_parent_preview(preview):
+        return await get_preview_parent_child_schedule(db, preview, link_id)
+    return await db.get_parent_child_schedule(parent_id, link_id)
+
+
+async def _get_parent_child_homework(
+    db: Database,
+    parent_id: int,
+    link_id: int,
+    status: str,
+    preview: dict | None = None,
+):
+    if is_synthetic_parent_preview(preview):
+        return await get_preview_parent_child_homework(db, preview, link_id, status=status)
+    return await db.get_parent_child_homework(parent_id, link_id, status=status)
+
+
+async def _get_parent_child_payments(
+    db: Database,
+    parent_id: int,
+    link_id: int,
+    limit: int,
+    preview: dict | None = None,
+):
+    if is_synthetic_parent_preview(preview):
+        return await get_preview_parent_child_payments(db, preview, link_id, limit=limit)
+    return await db.get_parent_child_payments(parent_id, link_id, limit=limit)
+
+
 # ─── Global navigation ────────────────────────────────────────────────────────
 
 @router.callback_query(lambda c: c.data == 'back_to_menu', StateFilter('*'))
-async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext):
+async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     await state.clear()
-    await callback_query.message.edit_text(MAIN_MENU_TEXT, reply_markup=main_keyboard)
+    await render_user_home(callback_query.message, db, callback_query.from_user.id)
     await callback_query.answer()
 
 
@@ -78,6 +181,7 @@ async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db:
     state_data = await state.get_data()
     await state.clear()
     is_admin = callback_query.from_user.id == config.ADMIN_ID
+    preview = await get_preview_context(db, callback_query.from_user.id)
     if is_admin:
         restored = await restore_admin_view(
             callback_query.bot,
@@ -89,6 +193,10 @@ async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db:
         if restored:
             await callback_query.answer("Действие отменено.")
             return
+        if preview:
+            await render_user_home(callback_query.message, db, callback_query.from_user.id)
+            await callback_query.answer("Действие отменено.")
+            return
     await callback_query.message.edit_text(
         ACTION_CANCELLED_TEXT,
         reply_markup=back_to_admin_keyboard if is_admin else back_to_menu_keyboard,
@@ -98,120 +206,367 @@ async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db:
 
 # ─── Main menu callbacks ──────────────────────────────────────────────────────
 
-async def _render_profile_screen(message: types.Message, db: Database, user_id: int):
-    user = await db.get_user(user_id)
-    if not user:
-        await message.edit_text(REGISTRATION_REQUIRED_TEXT, reply_markup=back_to_menu_keyboard)
-        return
 
-    balance = await db.get_student_lesson_balance(user_id)
-    next_lessons = await db.get_active_lessons(user_id) if user["role"] == "student" else []
-    next_lesson = next_lessons[0]["lesson_date"] if next_lessons and next_lessons[0].get("lesson_date") else None
-
-    children = None
-    if user["role"] == "parent":
-        children = await db.get_parent_children(user_id)
-
-    text = build_profile_text(
-        user,
-        balance,
-        next_lesson=next_lesson,
-        reminders=user.get("lesson_reminders"),
-        children=children,
-    )
-    if user["role"] == "student":
-        keyboard = profile_keyboard
-    elif user["role"] == "parent":
-        keyboard = parent_profile_keyboard
-    else:
-        keyboard = back_to_menu_keyboard
-    await message.edit_text(text, reply_markup=keyboard)
-
-
-async def _render_notifications_screen(message: types.Message, db: Database, user_id: int):
+async def _render_notifications_screen(message: types.Message, db: Database, user_id: int, preview: dict | None = None):
     user = await db.get_user(user_id)
     reminders = (user.get("lesson_reminders") or "enabled") if user else "enabled"
-    await message.edit_text(
+    await _edit_text_for_actor(
+        message,
         build_notifications_text(reminders),
-        reply_markup=make_notifications_keyboard(reminders),
+        make_notifications_keyboard(reminders),
+        preview,
     )
 
 
-async def _render_homework_list(message: types.Message, db: Database, user_id: int, status: str = "active"):
+async def _render_homework_list(message: types.Message, db: Database, user_id: int, status: str = "active", preview: dict | None = None):
     items = await db.get_student_homework(user_id, status)
-    await message.edit_text(
+    await _edit_text_for_actor(
+        message,
         build_homework_text(items, status),
-        reply_markup=make_homework_list_keyboard(items, status) if items else make_homework_filter_keyboard(status),
+        make_homework_list_keyboard(items, status) if items else make_homework_filter_keyboard(status),
+        preview,
+    )
+
+
+async def _render_homework_detail(message: types.Message, db: Database, user_id: int, hw_id: int, status: str, preview: dict | None = None):
+    hw = await db.get_homework_by_id(hw_id)
+    if not hw or hw["student_id"] != user_id or (status and hw["status"] != status):
+        await _edit_text_for_actor(
+            message,
+            "ℹ️ Задание не найдено или уже недоступно.",
+            back_to_menu_keyboard,
+            preview,
+        )
+        return
+
+    homework_html = homework_body_html(
+        hw.get("title"),
+        hw.get("description"),
+        hw.get("attachment_name"),
+        hw.get("attachment_mime_type"),
+    ) or "—"
+    title = "📚 <b>Домашнее задание</b>" if status == "active" else "✅ <b>Выполненное задание</b>"
+    await _edit_text_for_actor(
+        message,
+        "\n".join([
+            title,
+            "",
+            homework_html,
+            f"📅 Дедлайн: <b>{hw['deadline'].strftime('%d.%m.%Y') if hw.get('deadline') else '—'}</b>",
+        ]),
+        make_homework_item_keyboard(hw_id, status, has_attachment=bool(hw.get("attachment_file_id"))),
+        preview,
+    )
+
+
+async def _render_parent_child_home(message: types.Message, db: Database, parent_id: int, link_id: int, preview: dict | None = None):
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child:
+        await _edit_text_for_actor(
+            message,
+            "⚠️ Не удалось найти этого ребёнка в вашем кабинете.",
+            back_to_menu_keyboard,
+            preview,
+        )
+        return
+    await _edit_text_for_actor(
+        message,
+        build_parent_child_hub_text(child),
+        make_parent_child_keyboard(link_id, linked=child.get("link_status") == "linked"),
+        preview,
+    )
+
+
+async def _render_parent_homework_detail(
+    message: types.Message,
+    db: Database,
+    parent_id: int,
+    link_id: int,
+    hw_id: int,
+    status: str,
+    preview: dict | None = None,
+):
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    hw = await db.get_homework_by_id(hw_id)
+    if (
+        not child
+        or child.get("link_status") != "linked"
+        or not hw
+        or hw.get("student_id") != child.get("student_id")
+        or (status and hw.get("status") != status)
+    ):
+        await _edit_text_for_actor(
+            message,
+            "ℹ️ Задание не найдено или уже недоступно.",
+            make_back_button_keyboard("◀️ К ребёнку", f"parent:child:{link_id}"),
+            preview,
+        )
+        return
+
+    homework_html = homework_body_html(
+        hw.get("title"),
+        hw.get("description"),
+        hw.get("attachment_name"),
+        hw.get("attachment_mime_type"),
+    ) or "—"
+    title = "📚 <b>Домашнее задание ребёнка</b>" if status == "active" else "✅ <b>Выполненное задание ребёнка</b>"
+    await _edit_text_for_actor(
+        message,
+        "\n".join([
+            title,
+            "",
+            homework_html,
+            f"📅 Дедлайн: <b>{hw['deadline'].strftime('%d.%m.%Y') if hw.get('deadline') else '—'}</b>",
+        ]),
+        make_parent_homework_item_keyboard(
+            link_id,
+            hw_id,
+            status,
+            has_attachment=bool(hw.get("attachment_file_id")),
+        ),
+        preview,
     )
 
 @router.callback_query(lambda c: c.data in ['schedule', 'freeze', 'payment', 'profile'])
 async def process_menu_choice(callback_query: types.CallbackQuery, db: Database):
     choice = callback_query.data
-    user_id = callback_query.from_user.id
-
-    user = await db.get_user(user_id)
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
 
     if not user:
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             REGISTRATION_REQUIRED_TEXT,
-            reply_markup=back_to_menu_keyboard,
+            back_to_menu_keyboard,
+            preview,
         )
         await callback_query.answer()
         return
 
     if choice == 'schedule':
         lessons = await db.get_active_lessons(user_id)
-        text = build_schedule_text(lessons)
-        await callback_query.message.edit_text(text, reply_markup=back_to_menu_keyboard)
+        text = build_schedule_text(lessons, lesson_format=user.get("lesson_format"))
+        await _edit_text_for_actor(callback_query.message, text, back_to_menu_keyboard, preview)
 
     elif choice == 'freeze':
         lessons = await db.get_active_lessons(user_id)
         active_count = len(lessons)
         if not active_count:
-            await callback_query.message.edit_text(
+            await _edit_text_for_actor(
+                callback_query.message,
                 build_action_result_text(
                     "Заморозка сейчас не нужна",
                     "У вас нет активных занятий, которые можно отправить на заморозку.",
                     next_step="Когда появятся новые уроки, к этой кнопке можно будет вернуться в любой момент.",
                     icon="ℹ️",
                 ),
-                reply_markup=back_to_menu_keyboard,
+                back_to_menu_keyboard,
+                preview,
             )
         else:
-            await callback_query.message.edit_text(
+            await _edit_text_for_actor(
+                callback_query.message,
                 build_freeze_intro_text(active_count),
-                reply_markup=freeze_keyboard,
+                freeze_keyboard,
+                preview,
             )
 
     elif choice == 'payment':
         payments = await db.get_student_payments(user_id)
         balance = await db.get_student_lesson_balance(user_id)
         text = build_payment_text(balance, payments)
-        await callback_query.message.edit_text(text, reply_markup=payment_keyboard)
+        await _edit_text_for_actor(callback_query.message, text, payment_keyboard, preview)
 
     elif choice == 'profile':
-        await _render_profile_screen(callback_query.message, db, user_id)
+        await render_profile_screen(callback_query.message, db, callback_query.from_user.id)
 
     await callback_query.answer()
 
 
-def _build_profile_text(user, balance: int) -> str:
-    return build_profile_text(user, balance, reminders=user.get("lesson_reminders"))
+@router.callback_query(lambda c: c.data == "parent:home")
+async def process_parent_home(callback_query: types.CallbackQuery, db: Database):
+    _, user, _ = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    await render_user_home(callback_query.message, db, callback_query.from_user.id)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and c.data.endswith(":schedule"))
+async def process_parent_child_schedule(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    link_id = int(callback_query.data.split(":")[2])
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child:
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    if child.get("link_status") != "linked":
+        await _render_parent_child_home(callback_query.message, db, parent_id, link_id, preview)
+        await callback_query.answer()
+        return
+    lessons = await _get_parent_child_schedule(db, parent_id, link_id, preview)
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_schedule_text(list(lessons or []), lesson_format=child.get("lesson_format")),
+        make_back_button_keyboard("◀️ К ребёнку", f"parent:child:{link_id}"),
+        preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and ":homework:view:" in c.data)
+async def process_parent_child_homework_detail(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    parts = callback_query.data.split(":")
+    if len(parts) != 7:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    link_id = int(parts[2])
+    hw_id = int(parts[5])
+    status = parts[6]
+    await _render_parent_homework_detail(callback_query.message, db, parent_id, link_id, hw_id, status, preview=preview)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and ":homework:file:" in c.data)
+async def process_parent_child_homework_file(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
+    parent_id = callback_query.from_user.id
+    parts = callback_query.data.split(":")
+    if len(parts) != 7:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+
+    link_id = int(parts[2])
+    hw_id = int(parts[5])
+    status = parts[6]
+    child = await db.get_parent_child_link(parent_id, link_id)
+    hw = await db.get_homework_by_id(hw_id)
+    if (
+        not child
+        or child.get("link_status") != "linked"
+        or not hw
+        or hw.get("student_id") != child.get("student_id")
+        or (status and hw.get("status") != status)
+    ):
+        await callback_query.answer("Задание не найдено или уже недоступно.", show_alert=True)
+        return
+    if not hw.get("attachment_file_id"):
+        await callback_query.answer("У этого задания нет вложенного файла.", show_alert=True)
+        return
+
+    try:
+        await callback_query.bot.send_document(parent_id, hw["attachment_file_id"])
+    except Exception:
+        await callback_query.answer("Не удалось отправить файл. Попробуйте чуть позже.", show_alert=True)
+        return
+
+    await callback_query.answer("Файл отправлен.")
+
+
+@router.callback_query(
+    lambda c: c.data.startswith("parent:child:")
+    and (c.data.endswith(":homework:active") or c.data.endswith(":homework:done"))
+)
+async def process_parent_child_homework(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    parts = callback_query.data.split(":")
+    link_id = int(parts[2])
+    status = parts[4]
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child:
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    if child.get("link_status") != "linked":
+        await _render_parent_child_home(callback_query.message, db, parent_id, link_id, preview)
+        await callback_query.answer()
+        return
+    items = await _get_parent_child_homework(db, parent_id, link_id, status, preview)
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_homework_text(list(items or []), status),
+        make_parent_homework_keyboard(link_id, status=status, items=list(items or [])),
+        preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and c.data.endswith(":payments"))
+async def process_parent_child_payments(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    link_id = int(callback_query.data.split(":")[2])
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child:
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    if child.get("link_status") != "linked":
+        await _render_parent_child_home(callback_query.message, db, parent_id, link_id, preview)
+        await callback_query.answer()
+        return
+    payments = await _get_parent_child_payments(db, parent_id, link_id, 20, preview)
+    balance = int(child.get("lesson_balance") or 0)
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_payment_text(balance, list(payments or [])),
+        make_parent_payments_keyboard(link_id),
+        preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:"))
+async def process_parent_child_home(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    parts = callback_query.data.split(":")
+    if len(parts) != 3:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    link_id = int(parts[2])
+    await _render_parent_child_home(callback_query.message, db, parent_id, link_id, preview)
+    await callback_query.answer()
 
 
 async def _build_reply_context_label(db: Database, context_key: str, entity_id: int | None) -> str:
     if context_key == "homework" and entity_id:
         hw = await db.get_homework_by_id(entity_id)
         if hw:
-            return f"по домашнему заданию «{html.quote(hw['title'])}»"
+            preview = html.quote(
+                homework_preview_text(
+                    hw.get("title"),
+                    hw.get("description"),
+                    attachment_name=hw.get("attachment_name"),
+                    attachment_mime_type=hw.get("attachment_mime_type"),
+                )
+            )
+            return f"по домашнему заданию «{preview}»"
     return REPLY_CONTEXT_LABELS.get(context_key, "без уточнения темы")
 
 
 @router.callback_query(lambda c: c.data.startswith('reply:'), StateFilter('*'))
 async def start_student_reply(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
-    user = await db.get_user(callback_query.from_user.id)
-    if not user or user["role"] != "student":
-        await callback_query.answer("Ответ доступен только ученикам.", show_alert=True)
+    if await _block_preview_action(callback_query, db, clear_state=state):
+        return
+
+    _, user, _ = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user["role"] not in {"student", "parent"}:
+        await callback_query.answer("Ответ доступен только зарегистрированным пользователям.", show_alert=True)
         return
 
     if not config.ADMIN_ID:
@@ -221,6 +576,9 @@ async def start_student_reply(callback_query: types.CallbackQuery, state: FSMCon
     parts = callback_query.data.split(':')
     context_key = parts[1] if len(parts) > 1 else "general"
     entity_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+    if user["role"] == "parent" and context_key not in {"general", "payment"}:
+        await callback_query.answer("Этот тип ответа сейчас доступен только ученикам.", show_alert=True)
+        return
     context_label = await _build_reply_context_label(db, context_key, entity_id)
 
     await state.clear()
@@ -231,22 +589,30 @@ async def start_student_reply(callback_query: types.CallbackQuery, state: FSMCon
         reply_context_label=context_label,
     )
 
-    await callback_query.message.answer(
+    await _open_reply_prompt(
+        callback_query.message,
         "✉️ Напишите сообщение для преподавателя.\n\n"
         f"Контекст: <b>{context_label}</b>\n\n"
         "Можно отправить текст, фото, документ, голосовое, GIF или стикер.",
-        reply_markup=cancel_fsm_keyboard,
     )
     await callback_query.answer()
 
 
 @router.message(StateFilter(StudentReply.waiting_for_message))
 async def process_student_reply_message(message: types.Message, state: FSMContext, db: Database):
-    user = await db.get_user(message.from_user.id)
-    if not user or user["role"] != "student":
+    if await get_preview_context(db, message.from_user.id):
         await state.clear()
         await message.answer(
-            "⚠️ Ответ сейчас доступен только зарегистрированным ученикам.",
+            PREVIEW_BLOCKED_ALERT,
+            reply_markup=back_to_admin_keyboard,
+        )
+        return
+
+    user = await db.get_user(message.from_user.id)
+    if not user or user["role"] not in {"student", "parent"}:
+        await state.clear()
+        await message.answer(
+            "⚠️ Ответ сейчас доступен только зарегистрированным пользователям.",
             reply_markup=back_to_menu_keyboard,
         )
         return
@@ -263,10 +629,11 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
     context_label = data.get("reply_context_label", "без уточнения темы")
     student_name = html.quote(user["full_name"] or message.from_user.full_name or str(message.from_user.id))
     username = f"@{message.from_user.username}" if message.from_user.username else "—"
+    sender_title = "родителя" if user["role"] == "parent" else "ученика"
 
     await message.bot.send_message(
         config.ADMIN_ID,
-        "✉️ <b>Ответ от ученика</b>\n\n"
+        f"✉️ <b>Сообщение от {sender_title}</b>\n\n"
         f"👤 {student_name}\n"
         f"🆔 <code>{message.from_user.id}</code>\n"
         f"🔗 Username: {html.quote(username)}\n"
@@ -314,7 +681,7 @@ def _get_project_site_url(info: dict | None = None) -> str:
 @router.callback_query(lambda c: c.data == 'contacts')
 async def process_contacts(callback_query: types.CallbackQuery, db: Database):
     info = load_teacher_info()
-    user = await db.get_user(callback_query.from_user.id)
+    _, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     text = _build_contacts_text(info, show_address=bool(user))
     contacts = info.get('contacts', {})
     kb = make_contacts_keyboard(
@@ -324,88 +691,152 @@ async def process_contacts(callback_query: types.CallbackQuery, db: Database):
         google_meet_url=contacts.get('google_meet', ''),
         website_url=_get_project_site_url(info),
     )
-    await callback_query.message.edit_text(text, reply_markup=kb)
+    await _edit_text_for_actor(callback_query.message, text, kb, preview)
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith('level_test:'))
-async def process_level_test_choice(callback_query: types.CallbackQuery):
+async def process_level_test_choice(callback_query: types.CallbackQuery, db: Database):
     action = callback_query.data.split(':', 1)[1]
     url = _get_level_test_url()
+    preview = await get_preview_context(db, callback_query.from_user.id)
 
     if action == "now":
         if url:
-            await callback_query.message.edit_text(
+            await _edit_text_for_actor(
+                callback_query.message,
                 build_action_result_text(
                     "Тест уровня",
                     "Отлично. Откройте тест по кнопке ниже, когда будете готовы.",
                     next_step="Если что-то будет непонятно, можно написать преподавателю.",
                     icon="🧪",
                 ),
-                reply_markup=make_level_test_link_keyboard(url, back_callback="profile"),
+                make_level_test_link_keyboard(url, back_callback="profile"),
+                preview,
             )
         else:
-            await callback_query.message.edit_text(
+            await _edit_text_for_actor(
+                callback_query.message,
                 build_action_result_text(
                     "Тест уровня",
                     "Ссылка на тест пока не добавлена.",
                     next_step="Напишите преподавателю, и он пришлёт её отдельно.",
                     icon="🧪",
                 ),
-                reply_markup=make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+                make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+                preview,
             )
     elif action == "later":
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             build_action_result_text(
                 "Можно пройти позже",
                 "Кнопка <b>🧪 Тест уровня</b> останется в профиле.",
                 next_step="Когда захотите, вернитесь к ней в любое время.",
                 icon="🕒",
             ),
-            reply_markup=make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+            make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+            preview,
         )
     else:
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             build_action_result_text(
                 "Тест можно не проходить",
                 "Ничего страшного. Если передумаете, преподаватель поможет с выбором следующего шага.",
                 icon="🙏",
             ),
-            reply_markup=make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+            make_back_button_keyboard("◀️ Назад в профиль", "profile"),
+            preview,
         )
 
     await callback_query.answer()
 
 
+@router.callback_query(lambda c: c.data == 'profile:danger')
+async def process_profile_danger(callback_query: types.CallbackQuery, db: Database):
+    _, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") not in {"student", "parent"}:
+        await _edit_text_for_actor(
+            callback_query.message,
+            "ℹ️ Опасные действия доступны только ученикам и родителям.",
+            back_to_menu_keyboard,
+            preview,
+        )
+        await callback_query.answer()
+        return
+
+    await _edit_text_for_actor(
+        callback_query.message,
+        "🛡 <b>Опасные действия</b>\n\n"
+        "Здесь находятся действия, которые удаляют профиль или доступ к данным.\n"
+        "Используйте их только если уверены.",
+        make_profile_danger_keyboard(),
+        preview,
+    )
+    await callback_query.answer()
+
+
 @router.callback_query(lambda c: c.data == 'profile:delete_me')
 async def process_profile_delete_me(callback_query: types.CallbackQuery, db: Database):
-    user = await db.get_user(callback_query.from_user.id)
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     if not user:
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             "⚠️ Вы не зарегистрированы. Используйте /start.",
-            reply_markup=back_to_menu_keyboard,
+            back_to_menu_keyboard,
+            preview,
         )
         await callback_query.answer()
         return
 
     if user["role"] not in {"student", "parent"}:
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             "ℹ️ Самоудаление сейчас доступно ученикам и родителям.",
-            reply_markup=back_to_menu_keyboard,
+            back_to_menu_keyboard,
+            preview,
         )
         await callback_query.answer()
         return
 
-    snapshot = await db.get_user_deletion_snapshot(callback_query.from_user.id)
-    await callback_query.message.edit_text(
+    snapshot = await db.get_user_deletion_snapshot(user_id)
+    await _edit_text_for_actor(
+        callback_query.message,
         _build_self_delete_warning(user, snapshot),
-        reply_markup=make_self_delete_confirm_keyboard(),
+        make_self_delete_review_keyboard(back_callback="profile:danger"),
+        preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == 'self_delete:review')
+async def process_self_delete_review(callback_query: types.CallbackQuery, db: Database):
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user:
+        await _edit_text_for_actor(
+            callback_query.message,
+            "⚠️ Вы не зарегистрированы. Используйте /start.",
+            back_to_menu_keyboard,
+            preview,
+        )
+        await callback_query.answer()
+        return
+
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_self_delete_final_warning_text(user.get("role")),
+        make_self_delete_confirm_keyboard(back_callback="profile:delete_me"),
+        preview,
     )
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data == 'self_delete:confirm')
 async def process_self_delete_confirm(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
     user = await db.get_user(callback_query.from_user.id)
     if not user:
         await callback_query.message.edit_text(
@@ -436,7 +867,7 @@ async def process_self_delete_confirm(callback_query: types.CallbackQuery, db: D
 
 @router.callback_query(lambda c: c.data in {'requisites', 'payment:requisites'})
 async def process_requisites(callback_query: types.CallbackQuery, db: Database):
-    user = await db.get_user(callback_query.from_user.id)
+    _, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     back_keyboard = (
         make_back_button_keyboard("◀️ Назад к оплате", "payment")
         if callback_query.data == "payment:requisites"
@@ -444,18 +875,22 @@ async def process_requisites(callback_query: types.CallbackQuery, db: Database):
     )
 
     if not user:
-        await callback_query.message.edit_text(
+        await _edit_text_for_actor(
+            callback_query.message,
             "🔒 Реквизиты доступны только зарегистрированным пользователям.\n\n"
             "Используйте /start для регистрации.",
-            reply_markup=back_keyboard,
+            back_keyboard,
+            preview,
         )
         await callback_query.answer()
         return
 
     info = load_teacher_info()
-    await callback_query.message.edit_text(
+    await _edit_text_for_actor(
+        callback_query.message,
         build_requisites_text(info.get("requisites", {})),
-        reply_markup=back_keyboard,
+        back_keyboard,
+        preview,
     )
     await callback_query.answer()
 
@@ -464,6 +899,9 @@ async def process_requisites(callback_query: types.CallbackQuery, db: Database):
 
 @router.callback_query(lambda c: c.data.startswith('freeze:'))
 async def process_freeze_reason(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if await _block_preview_action(callback_query, db, clear_state=state):
+        return
+
     reason = callback_query.data.split(':')[1]
     label = FREEZE_REASON_LABELS.get(reason, reason)
     active_lessons = await db.get_active_lessons(callback_query.from_user.id)
@@ -498,6 +936,9 @@ async def process_freeze_reason(callback_query: types.CallbackQuery, state: FSMC
     StateFilter(FreezeConfirm.waiting_for_confirm),
 )
 async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if await _block_preview_action(callback_query, db, clear_state=state):
+        return
+
     reason = callback_query.data.split(':', 1)[1]
     user_id = callback_query.from_user.id
     state_data = await state.get_data()
@@ -554,20 +995,67 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
 
 @router.callback_query(lambda c: c.data == 'homework')
 async def process_homework(callback_query: types.CallbackQuery, db: Database):
-    await _render_homework_list(callback_query.message, db, callback_query.from_user.id, status="active")
+    user_id, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    await _render_homework_list(callback_query.message, db, user_id, status="active", preview=preview)
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data in ('hw:active', 'hw:done'))
 async def process_homework_list(callback_query: types.CallbackQuery, db: Database):
-    user_id = callback_query.from_user.id
+    user_id, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     status = callback_query.data.split(':')[1]
-    await _render_homework_list(callback_query.message, db, user_id, status=status)
+    await _render_homework_list(callback_query.message, db, user_id, status=status, preview=preview)
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("hw:view:"))
+async def process_homework_detail(callback_query: types.CallbackQuery, db: Database):
+    parts = callback_query.data.split(":")
+    if len(parts) != 4:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    user_id, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    hw_id = int(parts[2])
+    status = parts[3]
+    await _render_homework_detail(callback_query.message, db, user_id, hw_id, status, preview=preview)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("hw:file:"))
+async def process_homework_attachment(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
+    parts = callback_query.data.split(":")
+    if len(parts) != 4:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+
+    hw_id = int(parts[2])
+    status = parts[3]
+    user_id = callback_query.from_user.id
+    hw = await db.get_homework_by_id(hw_id)
+    if not hw or hw["student_id"] != user_id or (status and hw["status"] != status):
+        await callback_query.answer("Задание не найдено или уже недоступно.", show_alert=True)
+        return
+    if not hw.get("attachment_file_id"):
+        await callback_query.answer("У этого задания нет вложенного файла.", show_alert=True)
+        return
+
+    try:
+        await callback_query.bot.send_document(user_id, hw["attachment_file_id"])
+    except Exception:
+        await callback_query.answer("Не удалось отправить файл. Попробуйте чуть позже.", show_alert=True)
+        return
+
+    await callback_query.answer("Файл отправлен.")
 
 
 @router.callback_query(lambda c: c.data.startswith('hw_done:'))
 async def process_homework_done(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
     user_id = callback_query.from_user.id
     hw_id = int(callback_query.data.split(':')[1])
     hw = await db.get_homework_by_id(hw_id)
@@ -580,7 +1068,12 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
         return
 
     await db.mark_homework_done(hw_id, user_id)
-    title = html.quote(hw['title'])
+    homework_html = homework_body_html(
+        hw.get("title"),
+        hw.get("description"),
+        hw.get("attachment_name"),
+        hw.get("attachment_mime_type"),
+    ) or "—"
 
     student = await db.get_user(user_id)
     student_name = html.quote(student['full_name']) if student else str(user_id)
@@ -590,7 +1083,7 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
                 config.ADMIN_ID,
                 f"✅ <b>ДЗ выполнено!</b>\n\n"
                 f"👤 {student_name}\n"
-                f"📝 {title}",
+                f"📝 Задание:\n{homework_html}",
             )
         except Exception as exc:
             logger.warning("Не удалось отправить админу уведомление о выполненном ДЗ %s: %s", hw_id, exc)
@@ -601,6 +1094,9 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
 
 @router.callback_query(lambda c: c.data.startswith('lesson_presence:'))
 async def process_lesson_presence(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
     user = await db.get_user(callback_query.from_user.id)
     if not user or user["role"] != "student":
         await callback_query.answer("Доступно только ученикам.", show_alert=True)
@@ -627,15 +1123,13 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
     student_name = html.quote(user["full_name"] or callback_query.from_user.full_name or str(callback_query.from_user.id))
     answer_label = LESSON_PRESENCE_LABELS[status]
 
-    await callback_query.message.edit_reply_markup(
-        reply_markup=make_teacher_reply_keyboard("lesson", lesson_id),
-    )
-    await callback_query.message.answer(
+    await callback_query.message.edit_text(
         build_action_result_text(
             "Ответ принят",
             f"Статус по занятию: <b>{answer_label}</b>.",
             next_step="Спасибо за подтверждение.",
         ),
+        reply_markup=back_to_menu_keyboard,
     )
 
     if config.ADMIN_ID:
@@ -656,6 +1150,9 @@ async def process_lesson_presence(callback_query: types.CallbackQuery, db: Datab
 
 @router.callback_query(lambda c: c.data.startswith('reschedule_pick:'))
 async def process_reschedule_pick(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
     user = await db.get_user(callback_query.from_user.id)
     if not user or user["role"] != "student":
         await callback_query.answer("Доступно только ученикам.", show_alert=True)
@@ -669,10 +1166,7 @@ async def process_reschedule_pick(callback_query: types.CallbackQuery, db: Datab
         return
 
     slot_label = format_reschedule_slot_label(slot)
-    await callback_query.message.edit_reply_markup(
-        reply_markup=make_teacher_reply_keyboard("broadcast"),
-    )
-    await callback_query.message.answer(
+    await callback_query.message.edit_text(
         build_action_result_text(
             "Вариант переноса отправлен",
             f"Я передал преподавателю, что вам подходит <b>{html.quote(slot_label)}</b>.",
@@ -700,20 +1194,24 @@ async def process_reschedule_pick(callback_query: types.CallbackQuery, db: Datab
 
 @router.callback_query(lambda c: c.data == 'notif:manage')
 async def process_notif_manage(callback_query: types.CallbackQuery, db: Database):
-    await _render_notifications_screen(callback_query.message, db, callback_query.from_user.id)
+    user_id, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    await _render_notifications_screen(callback_query.message, db, user_id, preview=preview)
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith('notif:'))
 async def process_notif_action(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+
     action = callback_query.data.split(':', 1)[1]
     user_id = callback_query.from_user.id
 
-    from datetime import timedelta, date
+    from datetime import timedelta
     if action == 'disable':
         await db.set_lesson_reminders(user_id, 'disabled')
     elif action == 'pause_week':
-        until = (date.today() + timedelta(weeks=1)).strftime('%d.%m.%Y')
+        until = (business_today() + timedelta(weeks=1)).strftime('%d.%m.%Y')
         await db.set_lesson_reminders(user_id, f'paused_until:{until}')
     elif action == 'enable':
         await db.set_lesson_reminders(user_id, 'enabled')

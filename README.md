@@ -26,6 +26,7 @@ Telegram-бот для управления учебным процессом: �
 - `ADMIN_ID` — Telegram ID администратора.
 - `PGUSER`, `PGPASSWORD`, `DATABASE`, `PGHOST`, `PGPORT` — параметры PostgreSQL.
 - `GOOGLE_CALENDAR_ID`, `GOOGLE_CREDENTIALS_FILE` — опциональная пара для Google Calendar sync.
+- `TUTORBOT_TIMEZONE` — бизнесовая timezone бота. По умолчанию `Europe/Moscow`; scheduler, БД и sync теперь должны жить в одном часовом поясе.
 - `TUTORBOT_ROOT` — корень проекта для shell-скриптов и watcher.
 - `TUTORBOT_SERVICE_NAME` — имя `systemd`-сервиса.
 - `TUTORBOT_SYSTEMD_SCOPE` — `system` или `user`.
@@ -114,6 +115,14 @@ TUTORBOT_ALLOW_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
 ```bash
 TUTORBOT_ALLOW_RESTORE=1 TUTORBOT_SKIP_PRE_RESTORE_BACKUP=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
 ```
+
+По умолчанию restore теперь откажется работать поверх запущенного бота. Если это осознанный live-restore:
+
+```bash
+TUTORBOT_ALLOW_RESTORE=1 TUTORBOT_ALLOW_LIVE_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
+```
+
+Новые backup-файлы создаются с `DROP`-инструкциями (`pg_dump --clean --if-exists`), а plain SQL restore перед загрузкой очищает `public` schema, чтобы rollback был предсказуемым.
 
 ## Smoke Check
 

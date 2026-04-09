@@ -3,8 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${TUTORBOT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+export TUTORBOT_ROOT="$ROOT"
 
-"$ROOT/.venv/bin/python" "$ROOT/scripts/validate_env.py"
-"$ROOT/scripts/healthcheck.sh"
+PYTHON_BIN="$ROOT/.venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="${PYTHON:-python3}"
+fi
 
-echo "release smoke ok"
+exec "$PYTHON_BIN" "$ROOT/scripts/release_smoke.py" --mode runtime "$@"

@@ -51,6 +51,17 @@ class ConfigEnvTest(unittest.TestCase):
         self.assertEqual(module.GOOGLE_CALENDAR_ID, "calendar@example.com")
         self.assertEqual(module.GOOGLE_CREDENTIALS_FILE, "/tmp/credentials.json")
 
+    def test_config_handles_invalid_admin_id_without_import_crash(self):
+        module = load_config_module(
+            {
+                "BOT_TOKEN": "token-123",
+                "ADMIN_ID": "not-an-int",
+            }
+        )
+
+        self.assertEqual(module.ADMIN_ID_RAW, "not-an-int")
+        self.assertEqual(module.ADMIN_ID, 0)
+
     def test_teacher_info_loader_reads_json_and_falls_back_cleanly(self):
         module = load_config_module({})
 
@@ -77,15 +88,15 @@ class ConfigEnvTest(unittest.TestCase):
             info_path.unlink()
             self.assertEqual(module.load_teacher_info(), {})
 
-    def test_internal_account_helpers_cover_known_test_identity(self):
+    def test_internal_account_helpers_leave_regular_student_unmarked(self):
         module = load_config_module({})
 
-        self.assertTrue(module.is_internal_test_account_name("Лиза Занкевич"))
-        self.assertTrue(module.is_internal_test_account(
+        self.assertFalse(module.is_internal_test_account_name("Лиза Занкевич"))
+        self.assertFalse(module.is_internal_test_account(
             full_name="Любой Пользователь",
             username="eliza_znkv",
         ))
-        self.assertTrue(module.is_internal_test_account(
+        self.assertFalse(module.is_internal_test_account(
             full_name="Любой Пользователь",
             telegram_id=389264815,
         ))

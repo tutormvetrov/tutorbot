@@ -28,5 +28,6 @@ AGENT_CONTEXT.md
 data/debug_context.jsonl
 data/debug_media/
 data/admin_notes.json
+data/admin_preview.json
 data/calendar_sync_report.json
 CLAUDE.md

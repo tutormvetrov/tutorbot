@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import calendar
-import re
 from datetime import date, datetime, timedelta
 
 from aiogram import html
@@ -12,12 +11,24 @@ from utils.brand import (
     choose_tone_variant,
     get_brand_tone,
 )
+from utils.homework_materials import build_next_homework_hint, material_progress_label
+from utils.homework_text import homework_body_html, homework_preview_text
 from utils.speech import speech_style_label
+from utils.time import business_today
 
-MAIN_MENU_TEXT = "Главное меню:"
+
+def _fix_utf8_mojibake(value: str) -> str:
+    try:
+        return value.encode("cp1251").decode("utf-8")
+    except Exception:
+        return value
+
+MAIN_MENU_TEXT = "📍 <b>Главное меню</b>\n\nВыберите, что нужно сейчас."
 ACTION_CANCELLED_TEXT = "❌ Действие отменено."
 REGISTRATION_REQUIRED_TEXT = "⚠️ Сначала зарегистрируйтесь через /start"
 DEACTIVATED_ACCOUNT_TEXT = "⛔️ Ваш аккаунт деактивирован. Обратитесь к преподавателю."
+BLOCKED_ACCOUNT_TEXT = _fix_utf8_mojibake("рџљ« Р”РѕСЃС‚СѓРї Рє Р±РѕС‚Сѓ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ. Р•СЃР»Рё СЌС‚Рѕ РѕС€РёР±РєР°, РѕР±СЂР°С‚РёС‚РµСЃСЊ Рє РїСЂРµРїРѕРґР°РІР°С‚РµР»СЋ.")
+BLOCKED_ACCOUNT_ALERT = _fix_utf8_mojibake("Р”РѕСЃС‚СѓРї Рє Р±РѕС‚Сѓ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ.")
 
 ADMIN_HOME_TEXT = (
     "🛠 <b>Панель администратора</b>\n\n"
@@ -25,7 +36,7 @@ ADMIN_HOME_TEXT = (
 )
 ADMIN_STUDENTS_CATEGORY_TEXT = (
     "👥 <b>Ученики</b>\n\n"
-    "Сначала откройте список учеников или добавьте нового.\n"
+    "Сначала откройте список учеников или родителей, либо добавьте нового ученика.\n"
     "Здесь же находятся формат занятий, обращение и действия по доступу."
 )
 ADMIN_EDUCATION_CATEGORY_TEXT = (
@@ -38,7 +49,15 @@ ADMIN_COMMUNICATION_CATEGORY_TEXT = (
 )
 ADMIN_SERVICE_CATEGORY_TEXT = (
     "⚙️ <b>Сервис</b>\n\n"
-    "Calendar, диагностика, тональность и рабочие заметки."
+    "Здесь собраны мониторинг бота и рабочий проектный контекст."
+)
+ADMIN_SERVICE_MONITORING_TEXT = (
+    "📊 <b>Мониторинг</b>\n\n"
+    "Здесь собраны синхронизация Calendar, отчёты и здоровье бота."
+)
+ADMIN_SERVICE_CONTEXT_TEXT = (
+    "🧠 <b>Контекст и проект</b>\n\n"
+    "Здесь лежат тональность бренда и рабочие заметки для следующих сессий."
 )
 ADMIN_SYNC_IN_PROGRESS_TEXT = "🔄 Синхронизирую Google Calendar..."
 ADMIN_SYNC_ERROR_HINT = (
@@ -49,6 +68,7 @@ ADMIN_SYNC_ERROR_HINT = (
 ADMIN_NO_REGISTERED_STUDENTS_TEXT = "⚠️ Нет зарегистрированных учеников."
 ADMIN_NO_ACTIVE_STUDENTS_TEXT = "👥 Нет активных учеников."
 ADMIN_STUDENTS_EMPTY_TEXT = "👥 <b>Список учеников</b>\n\nПока здесь пусто. Как только появятся ученики, список заполнится автоматически."
+ADMIN_PARENTS_EMPTY_TEXT = "👨‍👩‍👧 <b>Список родителей</b>\n\nПока здесь пусто. Как только появятся родители, список заполнится автоматически."
 ADMIN_LESSON_FORMATS_EMPTY_TEXT = "🏫 <b>Формат занятий</b>\n\nСейчас нет активных учеников, для которых можно переключить формат."
 ADMIN_SPEECH_STYLES_EMPTY_TEXT = "🗣 <b>Обращение с учениками</b>\n\nСейчас нет активных учеников, для которых можно переключить обращение."
 ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT = (
@@ -79,8 +99,11 @@ ADMIN_ADD_PAYMENT_COUNT_INVALID_TEXT = (
     "⚠️ Нужна целая положительная цифра. Например: <code>1</code>"
 )
 ADMIN_ADD_HOMEWORK_START_TEXT = "📚 <b>Задать домашнее задание</b>\n\nВыберите ученика."
-ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT = "📝 Введите <b>текст домашнего задания</b>. Можно со ссылками и форматированием."
-ADMIN_ADD_HOMEWORK_EMPTY_TEXT = "⚠️ Текст задания не может быть пустым."
+ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT = (
+    "📝 Отправьте <b>текст домашнего задания</b> или прикрепите <b>PDF/DOCX</b>.\n\n"
+    "Можно добавить подпись, ссылки и форматирование."
+)
+ADMIN_ADD_HOMEWORK_EMPTY_TEXT = "⚠️ Отправьте текст задания или прикрепите PDF/DOCX."
 ADMIN_ADD_HOMEWORK_DEADLINE_PROMPT_TEXT = (
     "📅 Введите дедлайн в формате <code>ДД.ММ.ГГГГ</code>.\n\n"
     "Подойдут варианты: <code>05.04.2026</code>, <code>05/04/2026</code> или <code>05\\04\\2026</code>"
@@ -143,7 +166,7 @@ def _add_calendar_month(value: date) -> date:
 def student_freshness_label(first_lesson_date: datetime | None, today: date | None = None) -> str:
     if not first_lesson_date:
         return "новый"
-    today = today or date.today()
+    today = today or business_today()
     rollover_date = _add_calendar_month(first_lesson_date.date())
     return "старый" if today >= rollover_date else "новый"
 
@@ -155,7 +178,17 @@ def student_freshness_badge(first_lesson_date: datetime | None, today: date | No
 
 def lesson_balance_label(balance: int | None) -> str:
     amount = int(balance or 0)
-    return f"{amount} уроков" if amount else "0 уроков"
+    remainder_ten = amount % 10
+    remainder_hundred = amount % 100
+    if 11 <= remainder_hundred <= 14:
+        suffix = "уроков"
+    elif remainder_ten == 1:
+        suffix = "урок"
+    elif remainder_ten in {2, 3, 4}:
+        suffix = "урока"
+    else:
+        suffix = "уроков"
+    return f"{amount} {suffix}"
 
 
 def lesson_format_label(value: str | None) -> str:
@@ -164,6 +197,26 @@ def lesson_format_label(value: str | None) -> str:
 
 def lesson_format_icon(value: str | None) -> str:
     return LESSON_FORMAT_ICONS.get(value or "online", LESSON_FORMAT_ICONS["online"])
+
+
+def lesson_duration_label(value: int | None) -> str:
+    try:
+        minutes = int(value or 90)
+    except (TypeError, ValueError):
+        minutes = 90
+    return f"{minutes} мин"
+
+
+def _item_value(item, key: str, default=None):
+    if item is None:
+        return default
+    getter = getattr(item, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    try:
+        return item[key]
+    except Exception:
+        return default
 
 
 def reminder_status_label(reminders: str | None) -> str:
@@ -199,7 +252,35 @@ def next_lesson_label(lessons: list) -> str:
     return format_datetime(lesson_date)
 
 
-def build_schedule_text(lessons: list) -> str:
+def build_student_home_text(
+    user,
+    balance: int,
+    active_homework_count: int,
+    next_lesson: datetime | None = None,
+) -> str:
+    full_name = html.quote(user.get("full_name") or "—")
+    next_lesson_text = format_datetime(next_lesson) if next_lesson else "не назначен"
+
+    lines = [
+        "📍 <b>Главное меню</b>",
+        "",
+        f"<b>{full_name}</b>",
+        f"📅 Ближайший урок: <b>{html.quote(next_lesson_text)}</b>",
+        f"📚 Активные ДЗ: <b>{int(active_homework_count or 0)}</b>",
+        f"🎓 Баланс: <b>{lesson_balance_label(balance)}</b>",
+        "",
+    ]
+
+    if next_lesson and active_homework_count:
+        lines.append("Сначала стоит проверить расписание и домашние задания.")
+    elif next_lesson:
+        lines.append("Ниже собраны расписание, оплата, профиль и связь с преподавателем.")
+    else:
+        lines.append("Начните с расписания или напишите преподавателю, если нужен новый урок.")
+    return "\n".join(lines)
+
+
+def build_schedule_text(lessons: list, lesson_format: str | None = None) -> str:
     if not lessons:
         return (
             "📅 <b>Расписание</b>\n\n"
@@ -208,18 +289,32 @@ def build_schedule_text(lessons: list) -> str:
         )
 
     next_lesson = None
+    next_lesson_format = lesson_format
     lines = []
     for lesson in lessons:
         lesson_date = lesson.get("lesson_date")
+        item_format = lesson.get("lesson_format") or lesson_format or "online"
         if lesson_date and next_lesson is None:
             next_lesson = lesson_date
-        lines.append(f"• <b>{format_datetime(lesson_date)}</b>")
+            next_lesson_format = item_format
+        lines.append(
+            f"• <b>{format_datetime(lesson_date)}</b> · "
+            f"{lesson_format_icon(item_format)} {lesson_format_label(item_format)}"
+        )
 
     title = "📅 <b>Расписание</b>"
     if next_lesson:
         title += f"\n\nБлижайший урок: <b>{format_datetime(next_lesson)}</b>"
+    if next_lesson_format:
+        title += (
+            f"\nФормат: <b>{lesson_format_label(next_lesson_format)}</b>"
+        )
     title += f"\nВсего в расписании: <b>{len(lessons)}</b>"
-    return title + "\n\n" + "\n".join(lines)
+    if (next_lesson_format or "online") == "offline":
+        hint = "Адрес очного урока всегда можно открыть в разделе <b>Контакты</b>."
+    else:
+        hint = "Ссылки и способы подключения к онлайн-уроку собраны в разделе <b>Контакты</b>."
+    return title + "\n\n" + "\n".join(lines) + f"\n\n{hint}"
 
 
 def build_profile_text(
@@ -240,9 +335,9 @@ def build_profile_text(
     role_label = role_labels.get(user.get("role"), user.get("role") or "—")
 
     lines = [
-        "👤 <b>Ваш профиль</b>",
+        "👤 <b>Профиль</b>",
         "",
-        f"Здравствуйте, <b>{full_name}</b>.",
+        f"<b>{full_name}</b>",
         f"🎭 Роль: <b>{role_label}</b>",
         f"📅 В системе с: <b>{reg_date}</b>",
     ]
@@ -259,12 +354,15 @@ def build_profile_text(
         lines.append("👨‍👩‍👧 <b>Дети в системе:</b>")
         if children:
             for child in children:
-                lines.append(f"• {html.quote(child)}")
+                if isinstance(child, dict):
+                    status = child.get("link_status")
+                    status_label = "✅ Привязан" if status == "linked" else "⏳ Ждём совпадение по имени"
+                    lines.append(f"• {html.quote(child.get('child_label') or '—')} — {status_label}")
+                else:
+                    lines.append(f"• {html.quote(child)}")
         else:
             lines.append("• Пока нет привязанных учеников.")
 
-    lines.append("")
-    lines.append("Если что-то нужно поменять или уточнить, нужное действие уже есть в кнопках ниже.")
     return "\n".join(lines)
 
 
@@ -302,23 +400,14 @@ def build_payment_text(balance: int, payments: list) -> str:
 
 def build_contacts_text(info: dict, show_address: bool = False) -> str:
     contacts = info.get("contacts", {})
-    tone = get_brand_tone()
     lines = [
         "📞 <b>Контакты преподавателя</b>",
-        "",
-        choose_tone_variant(
-            "Здесь собраны основные способы связи и подключения к занятию.",
-            "Здесь собраны быстрые способы связи и подключения к занятию.",
-            "Здесь собраны быстрые способы связи и подключения к занятию.",
-            "Здесь собраны удобные способы связи и подключения к занятию.",
-            tone=tone,
-        ),
     ]
     if contacts.get("project_site_url"):
         lines.extend([
             "",
             "🌐 <b>Сайт и материалы</b>",
-            "Там есть тест уровня, информация о занятиях и полезные материалы.",
+            "Там собраны тест уровня и материалы по занятиям.",
         ])
     if contacts.get("phone"):
         lines.append(f"📱 Телефон: <b>{html.quote(contacts['phone'])}</b>")
@@ -331,7 +420,6 @@ def build_contacts_text(info: dict, show_address: bool = False) -> str:
         lines.extend([
             "",
             "💻 <b>Онлайн-занятия</b>",
-            "Кнопки ниже откроют нужный сервис в один тап.",
             "VK Звонок — основной вариант, Google Meet — запасной, если нужен VPN.",
         ])
 
@@ -409,9 +497,68 @@ def build_parent_weekly_digest_text(parent_name: str, items: list[dict]) -> str:
             "",
             f"• <b>{html.quote(item['student_name'])}</b>",
             f"  📅 Урок за неделю: <b>{'был' if item['had_lesson'] else 'не было'}</b>",
+            f"  ⏭ Следующий урок: <b>{html.quote(format_short_datetime(item.get('next_lesson_date')) if item.get('next_lesson_date') else 'не назначен')}</b>",
             f"  📚 Активные ДЗ: <b>{item['active_homework_count']}</b>",
             f"  🎓 Баланс уроков: <b>{lesson_balance_label(item['lesson_balance'])}</b>",
         ])
+    return "\n".join(lines)
+
+
+def build_parent_home_text(parent_name: str, children: list[dict]) -> str:
+    lines = [
+        "👨‍👩‍👧 <b>Кабинет родителя</b>",
+        "",
+        f"<b>{html.quote(parent_name)}</b>",
+    ]
+    if not children:
+        lines.extend([
+            "",
+            "Пока в кабинете нет детей, привязанных к вашему профилю.",
+            "Если ребёнок уже занимается, но здесь пусто, напишите преподавателю.",
+        ])
+        return "\n".join(lines)
+
+    lines.extend(["", "Краткая сводка по каждому ребёнку:"])
+    for child in children:
+        status = child.get("link_status")
+        status_label = "✅ Привязан" if status == "linked" else "⏳ Ждём совпадение по имени"
+        next_lesson = (
+            format_short_datetime(child.get("next_lesson_date"))
+            if child.get("next_lesson_date")
+            else "не назначен"
+        )
+        lines.extend([
+            "",
+            f"• <b>{html.quote(child.get('child_label') or '—')}</b>",
+            f"  {status_label}",
+            f"  📅 Следующий урок: <b>{html.quote(next_lesson)}</b>",
+            f"  📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>",
+            f"  🎓 Баланс: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
+        ])
+    return "\n".join(lines)
+
+
+def build_parent_child_hub_text(child: dict) -> str:
+    status = child.get("link_status")
+    lines = [
+        f"👧 <b>{html.quote(child.get('child_label') or 'Ребёнок')}</b>",
+        "",
+    ]
+    if status != "linked":
+        lines.extend([
+            "⏳ Этот ребёнок пока сохранён как ориентир по имени и ещё не привязан к активному профилю ученика.",
+            "Когда совпадение появится, здесь автоматически откроются расписание, домашка и оплаты.",
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
+        f"{lesson_format_icon(child.get('lesson_format'))} Формат: <b>{lesson_format_label(child.get('lesson_format'))}</b>",
+        f"📅 Ближайший урок: <b>{html.quote(format_datetime(child.get('next_lesson_date')) if child.get('next_lesson_date') else 'не назначен')}</b>",
+        f"📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>",
+        f"🎓 Баланс уроков: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
+        "",
+        "Выберите ниже, что хотите посмотреть подробнее.",
+    ])
     return "\n".join(lines)
 
 
@@ -489,17 +636,22 @@ def _group_active_homework(items: list, today: date) -> list[tuple[str, list]]:
 
 
 def build_homework_list_text(items: list, status: str, today: date | None = None) -> str:
-    today = today or date.today()
+    today = today or business_today()
     if status == "done":
         lines = [f"✅ <b>Выполненные задания</b> ({len(items)})"]
         for index, hw in enumerate(items, 1):
+            body_html = homework_body_html(
+                hw.get("title"),
+                hw.get("description"),
+                hw.get("attachment_name"),
+                hw.get("attachment_mime_type"),
+            ) or "—"
             lines.extend([
                 "",
-                f"✅ <b>{index}. {hw['title']}</b>",
+                f"✅ <b>{index}. Задание</b>",
+                body_html,
                 f"📅 Дедлайн: {format_date(hw.get('deadline'))}",
             ])
-            if hw.get("description"):
-                lines.append(f"📄 {hw['description']}")
         return "\n".join(lines)
 
     lines = [f"📚 <b>Активные задания</b> ({len(items)})"]
@@ -511,13 +663,18 @@ def build_homework_list_text(items: list, status: str, today: date | None = None
     for group_title, group_items in groups:
         lines.extend(["", group_title])
         for hw in group_items:
+            body_html = homework_body_html(
+                hw.get("title"),
+                hw.get("description"),
+                hw.get("attachment_name"),
+                hw.get("attachment_mime_type"),
+            ) or "—"
             lines.extend([
                 "",
-                f"📝 <b>{counter}. {hw['title']}</b>",
+                f"📝 <b>{counter}. Задание</b>",
+                body_html,
                 f"📅 Дедлайн: {format_date(hw.get('deadline'))}",
             ])
-            if hw.get("description"):
-                lines.append(f"📄 {hw['description']}")
             counter += 1
     return "\n".join(lines)
 
@@ -610,8 +767,6 @@ def build_self_delete_warning_text(user, snapshot: dict) -> str:
         lines = [
             f"🗑 <b>Удалить профиль {full_name}?</b>",
             "",
-            "Перед удалением важно проверить, что вы действительно хотите очистить все данные внутри бота.",
-            "",
             f"📅 Занятий: <b>{snapshot.get('lessons', 0)}</b>",
             f"💳 Оплат: <b>{snapshot.get('payments_as_student', 0)}</b>",
             f"📚 Домашних заданий: <b>{snapshot.get('homework', 0)}</b>",
@@ -623,7 +778,7 @@ def build_self_delete_warning_text(user, snapshot: dict) -> str:
         lines.extend([
             "",
             "После удаления профиль, занятия, оплаты и домашние задания исчезнут из базы.",
-            "Если позже вы снова зайдёте в бота и отправите <code>/start</code>, регистрацию можно будет пройти заново.",
+            "Вернуться можно будет только через новую регистрацию по <code>/start</code>.",
             "",
             "⚠️ Это действие необратимо.",
         ])
@@ -633,8 +788,6 @@ def build_self_delete_warning_text(user, snapshot: dict) -> str:
         lines = [
             f"🗑 <b>Удалить родительский профиль {full_name}?</b>",
             "",
-            "Мы удалим только родительский профиль и связи внутри бота.",
-            "",
             f"👨‍👩‍👧 Связей с учениками: <b>{snapshot.get('parent_links_as_parent', 0)}</b>",
         ]
         if snapshot.get("payments_as_payer"):
@@ -642,7 +795,7 @@ def build_self_delete_warning_text(user, snapshot: dict) -> str:
         lines.extend([
             "",
             "Профили учеников при этом не удаляются.",
-            "Если понадобится, вы сможете снова зарегистрироваться как родитель через <code>/start</code>.",
+            "Вернуться можно будет через новую регистрацию по <code>/start</code>.",
             "",
             "⚠️ Это действие необратимо.",
         ])
@@ -651,6 +804,19 @@ def build_self_delete_warning_text(user, snapshot: dict) -> str:
     return (
         "🗑 <b>Удалить профиль?</b>\n\n"
         "Это действие необратимо. Если хотите продолжить, подтвердите удаление."
+    )
+
+
+def build_self_delete_final_warning_text(role: str | None) -> str:
+    if role == "parent":
+        return (
+            "⚠️ <b>Финальное подтверждение</b>\n\n"
+            "Родительский профиль будет удалён без возможности восстановления.\n"
+            "Профили учеников сохранятся."
+        )
+    return (
+        "⚠️ <b>Финальное подтверждение</b>\n\n"
+        "Профиль, уроки, оплаты и домашние задания будут удалены без возможности восстановления."
     )
 
 
@@ -694,32 +860,40 @@ def build_level_test_text(action: str, has_url: bool) -> str:
     )
 
 
-def build_broadcast_preview_text(broadcast_text: str) -> str:
+def build_broadcast_preview_block(mode: str | None, preview_text: str) -> str:
+    mode_label = "🧾 <b>Сообщение</b>"
+    if mode == "copy":
+        mode_label = "🧾 <b>Сообщение с медиа</b>"
+    return "\n".join([
+        mode_label,
+        "",
+        preview_text or "—",
+    ])
+
+
+def build_broadcast_preview_text(broadcast_text: str, mode: str | None = "text") -> str:
     return (
         "📢 <b>Предпросмотр рассылки</b>\n\n"
         "Именно так сообщение увидят выбранные ученики:\n\n"
-        f"{broadcast_text}\n\n"
+        f"{build_broadcast_preview_block(mode, broadcast_text)}\n\n"
         "Если всё выглядит хорошо, можно перейти к выбору получателей."
     )
 
 
-def admin_broadcast_recipients_text(preview: str, selected_count: int, total_count: int) -> str:
-    clean_preview = re.sub(r"<[^>]+>", "", preview or "").strip()
-    if len(clean_preview) > 120:
-        clean_preview = clean_preview[:117].rstrip() + "…"
+def admin_broadcast_recipients_text(preview: str, selected_count: int, total_count: int, mode: str | None = "text") -> str:
     lines = [
         "📢 <b>Выберите получателей рассылки</b>",
         "",
-        f"Сообщение: <i>{html.quote(clean_preview or 'без текста')}</i>",
+        build_broadcast_preview_block(mode, preview),
         "",
         f"Выбрано: <b>{selected_count}</b> из {total_count}",
     ]
     if total_count and selected_count == total_count:
-        lines.append("Сейчас выбраны все ученики. Можно снять лишние отметки вручную.")
+        lines.append("Сейчас выбраны все ученики. При необходимости снимите лишние отметки.")
     elif selected_count == 0:
-        lines.append("Сейчас никто не выбран. Отметьте хотя бы одного получателя.")
+        lines.append("Сейчас никто не выбран. Отметьте получателей вручную.")
     else:
-        lines.append("Можно точечно снять или добавить нужных получателей кнопками ниже.")
+        lines.append("Можно точечно добавить или убрать нужных получателей.")
     return "\n".join(lines)
 
 
@@ -738,17 +912,20 @@ def build_broadcast_send_result_text(sent_count: int, total_count: int) -> str:
     )
 
 
-def build_admin_freeze_queue_text(pending_count: int) -> str:
+def build_admin_freeze_queue_text(pending_count: int, current_index: int | None = None) -> str:
     if pending_count == 0:
         return (
             "❄️ <b>Заявки на заморозку</b>\n\n"
             "Сейчас активных заявок нет. Как только кто-то отправит новую, она появится здесь."
         )
-    return (
-        "❄️ <b>Заявки на заморозку</b>\n\n"
-        f"Сейчас на рассмотрении: <b>{pending_count}</b>.\n"
-        "Карточки заявок отправлены ниже отдельными сообщениями, чтобы их было удобно обработать по одной."
-    )
+    lines = [
+        "❄️ <b>Заявки на заморозку</b>",
+        "",
+        f"Сейчас на рассмотрении: <b>{pending_count}</b>.",
+    ]
+    if current_index is not None:
+        lines.append(f"Открыта заявка: <b>{current_index}</b> из {pending_count}.")
+    return "\n".join(lines)
 
 
 def build_admin_freeze_request_text(lesson_id: int, student_name: str, reason_label: str, submitted_at: str) -> str:
@@ -793,13 +970,15 @@ def build_admin_dashboard_text(snapshot: dict, ops_status: dict, last_sync_label
     lines = [
         "🛠 <b>Панель администратора</b>",
         "",
-        "Сводка на сейчас:",
+        "🚨 <b>Нужно внимание</b>",
         f"👥 Активных учеников: <b>{snapshot.get('active_students', 0)}</b>",
         f"📅 Уроков сегодня: <b>{snapshot.get('lessons_today', 0)}</b>",
         f"💰 Без уроков на балансе: <b>{snapshot.get('unpaid_students', 0)}</b>",
         f"🕳 Без ближайших уроков: <b>{snapshot.get('students_without_upcoming_lessons', 0)}</b>",
         f"❄️ Заявок на заморозку: <b>{snapshot.get('pending_freezes', 0)}</b>",
         f"📚 Активных ДЗ: <b>{snapshot.get('active_homework', 0)}</b>",
+        "",
+        "⚙️ <b>Система</b>",
         f"⏱ Scheduler: <b>{scheduler}</b>",
         f"🗓 Последний sync: <b>{html.quote(last_sync_label)}</b>",
         "",
@@ -808,16 +987,93 @@ def build_admin_dashboard_text(snapshot: dict, ops_status: dict, last_sync_label
     return "\n".join(lines)
 
 
-def build_admin_students_page_text(students: list, page: int, page_size: int) -> str:
+def build_admin_student_picker_text(students: list, page: int, page_size: int, flow: str) -> str:
     if not students:
         return ADMIN_STUDENTS_EMPTY_TEXT
+
+    flow_titles = {
+        "add_lesson": "➕ <b>Добавить занятие</b>",
+        "manage_lessons": "🗑 <b>Удалить занятие</b>",
+        "add_payment": "💳 <b>Добавить оплату</b>",
+        "add_homework": "📚 <b>Задать домашнее задание</b>",
+        "calendar_aliases": "🧭 <b>Алиасы Calendar</b>",
+        "preview_student": "👨‍🎓 <b>Просмотр как ученик</b>",
+        "preview_parent": "👨‍👩‍👧 <b>Просмотр как родитель</b>",
+    }
+    total_pages = max(1, (len(students) + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    start = page * page_size
+    page_items = students[start:start + page_size]
+
+    lines = [flow_titles.get(flow, "👥 <b>Выберите ученика</b>"), ""]
+    if total_pages > 1:
+        lines.append(f"Страница <b>{page + 1}/{total_pages}</b>")
+
+    for index, student in enumerate(page_items, start + 1):
+        next_lesson = format_short_datetime(student.get("next_lesson_date")) if student.get("next_lesson_date") else "не назначен"
+        lines.extend([
+            "",
+            f"<b>{index}. {html.quote(student['full_name'])}</b>",
+            f"{lesson_format_icon(student.get('lesson_format'))} {lesson_format_label(student.get('lesson_format'))} · 🎓 {lesson_balance_label(student.get('lesson_balance'))}",
+            f"📅 {next_lesson}",
+        ])
+
+    footer = "Выберите ученика кнопкой ниже."
+    if flow == "preview_parent":
+        footer = "Выберите ученика. Открою родительский контур на его данных."
+    lines.extend(["", footer])
+    return "\n".join(lines)
+
+
+def build_admin_students_page_text(
+    students: list,
+    page: int,
+    page_size: int,
+    filter_label: str = "Все",
+    query: str = "",
+    sort_label: str = "По имени",
+    total_count: int | None = None,
+) -> str:
+    total_count = total_count if total_count is not None else len(students)
+    safe_filter = html.quote(filter_label or "Все")
+    safe_query = html.quote(query.strip())
+    safe_sort = html.quote(sort_label or "По имени")
+
+    if not students:
+        lines = [
+            "👥 <b>Список учеников</b>",
+            "",
+            f"Фильтр: <b>{safe_filter}</b>",
+            f"Сортировка: <b>{safe_sort}</b>",
+        ]
+        if safe_query:
+            lines.append(f"Поиск: <b>{safe_query}</b>")
+        if total_count:
+            lines.extend([
+                "",
+                "По текущему фильтру ничего не найдено. Измените поиск или сбросьте ограничения.",
+            ])
+        else:
+            lines.extend([
+                "",
+                "Пока здесь пусто. Как только появятся ученики, список заполнится автоматически.",
+            ])
+        return "\n".join(lines)
 
     total_pages = max(1, (len(students) + page_size - 1) // page_size)
     page = max(0, min(page, total_pages - 1))
     start = page * page_size
     page_items = students[start:start + page_size]
 
-    lines = [f"👥 <b>Список учеников</b> ({len(students)} чел.)"]
+    lines = [
+        "👥 <b>Список учеников</b>",
+        "",
+        f"Показано: <b>{len(students)}</b> из {total_count}",
+        f"Фильтр: <b>{safe_filter}</b>",
+        f"Сортировка: <b>{safe_sort}</b>",
+    ]
+    if safe_query:
+        lines.append(f"Поиск: <b>{safe_query}</b>")
     if total_pages > 1:
         lines.append(f"Страница <b>{page + 1}/{total_pages}</b>")
 
@@ -839,6 +1095,66 @@ def build_admin_students_page_text(students: list, page: int, page_size: int) ->
     return "\n".join(lines)
 
 
+def build_admin_parents_page_text(
+    parents: list,
+    page: int,
+    page_size: int,
+    query: str = "",
+    total_count: int | None = None,
+) -> str:
+    total_count = total_count if total_count is not None else len(parents)
+    safe_query = html.quote(query.strip())
+
+    if not parents:
+        lines = [
+            "👨‍👩‍👧 <b>Список родителей</b>",
+        ]
+        if safe_query:
+            lines.extend([
+                "",
+                f"Поиск: <b>{safe_query}</b>",
+                "",
+                "По текущему поиску ничего не найдено. Измените запрос или очистите поиск.",
+            ])
+        else:
+            lines.extend([
+                "",
+                "Пока здесь пусто. Как только появятся родители, список заполнится автоматически.",
+            ])
+        return "\n".join(lines)
+
+    total_pages = max(1, (len(parents) + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    start = page * page_size
+    page_items = parents[start:start + page_size]
+
+    lines = [
+        "👨‍👩‍👧 <b>Список родителей</b>",
+        "",
+        f"Показано: <b>{len(parents)}</b> из {total_count}",
+    ]
+    if safe_query:
+        lines.append(f"Поиск: <b>{safe_query}</b>")
+    if total_pages > 1:
+        lines.append(f"Страница <b>{page + 1}/{total_pages}</b>")
+
+    for index, parent in enumerate(page_items, start + 1):
+        linked_children = int(parent.get("linked_children_count") or 0)
+        children_count = int(parent.get("children_count") or 0)
+        lines.extend([
+            "",
+            f"<b>{index}. {html.quote(parent['full_name'])}</b>",
+            f"👧 Дети: <b>{linked_children}</b> привязано из <b>{children_count}</b>",
+            f"🆔 Telegram ID: <code>{parent['telegram_id']}</code>",
+        ])
+
+    lines.extend([
+        "",
+        "Откройте карточку родителя кнопкой ниже.",
+    ])
+    return "\n".join(lines)
+
+
 def build_admin_student_card_text(student, balance: int, next_lesson: datetime | None) -> str:
     reminders = reminder_status_label(student.get("lesson_reminders"))
     freshness = student_freshness_badge(student.get("first_lesson_date"))
@@ -852,9 +1168,88 @@ def build_admin_student_card_text(student, balance: int, next_lesson: datetime |
         f"📘 Уровень: <b>{html.quote(student.get('level') or '—')}</b>",
         f"🎓 Баланс: <b>{lesson_balance_label(balance)}</b>",
         f"📅 Ближайший урок: <b>{html.quote(format_datetime(next_lesson) if next_lesson else 'не назначен')}</b>",
+        f"⏱ Длительность урока: <b>{lesson_duration_label(student.get('lesson_duration_minutes'))}</b>",
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
     ])
+
+
+def build_admin_parent_card_text(parent, children: list[dict], payments_as_payer: int) -> str:
+    username = parent.get("username")
+    username_label = f"@{username}" if username else "не указан"
+    status_label = "активен" if parent.get("is_active", True) else "деактивирован"
+    lines = [
+        f"👨‍👩‍👧 <b>{html.quote(parent['full_name'])}</b>",
+        "",
+        f"🏷 Статус: <b>{status_label}</b>",
+        f"🔗 Username: <b>{html.quote(username_label)}</b>",
+        f"💳 Оплат как плательщик: <b>{int(payments_as_payer or 0)}</b>",
+        f"👧 Связей с детьми: <b>{len(children)}</b>",
+        f"🆔 Telegram ID: <code>{parent['telegram_id']}</code>",
+    ]
+
+    if not children:
+        lines.extend([
+            "",
+            "Связанных детей пока нет.",
+        ])
+        return "\n".join(lines)
+
+    status_labels = {
+        "linked": "✅ привязан",
+        "waiting_link": "⏳ ждёт привязки",
+        "inactive_student": "⚠️ ученик неактивен",
+    }
+    lines.extend([
+        "",
+        "Дети:",
+    ])
+    for child in children:
+        child_label = html.quote(child.get("child_label") or child.get("student_info") or "Ребёнок")
+        status = status_labels.get(child.get("link_status"), "ℹ️ статус неизвестен")
+        lines.append(f"• {child_label}  |  {status}")
+    return "\n".join(lines)
+
+
+def build_teacher_lesson_followup_text(lesson: dict) -> str:
+    return "\n".join([
+        "🧾 <b>Урок завершился</b>",
+        "",
+        f"👤 Ученик: <b>{html.quote(lesson.get('full_name') or '—')}</b>",
+        f"📅 Урок: <b>{html.quote(format_datetime(lesson.get('lesson_date')))}</b>",
+        f"{lesson_format_icon(lesson.get('lesson_format'))} Формат: <b>{lesson_format_label(lesson.get('lesson_format'))}</b>",
+        "",
+        "Как прошёл урок?",
+        "Ниже можно сохранить приватный комментарий и закладку по учебнику или книге.",
+    ])
+
+
+def build_teacher_bookmark_reminder_text(lesson: dict) -> str:
+    is_offline = (lesson.get("lesson_format") or "online") == "offline"
+    lead_label = "за 1 час" if is_offline else "за 30 минут"
+    lines = [
+        "📖 <b>Закладка перед уроком</b>",
+        "",
+        f"👤 Ученик: <b>{html.quote(lesson.get('full_name') or '—')}</b>",
+        f"📅 Урок: <b>{html.quote(format_datetime(lesson.get('lesson_date')))}</b>",
+        f"{lesson_format_icon(lesson.get('lesson_format'))} Формат: <b>{lesson_format_label(lesson.get('lesson_format'))}</b>",
+        f"⏰ Напоминание: <b>{lead_label}</b>",
+        "",
+    ]
+
+    bookmark_state = lesson.get("current_bookmark_state") or "empty"
+    bookmark_text = lesson.get("current_bookmark_text") or ""
+    if bookmark_state == "saved" and bookmark_text:
+        lines.extend([
+            "📍 <b>Текущая закладка</b>",
+            bookmark_text,
+        ])
+    elif bookmark_state == "no_material":
+        lines.append("🚫 По учебнику или книге на прошлом уроке не работали, актуальной закладки сейчас нет.")
+    else:
+        lines.append("📭 Закладка для этого ученика пока не сохранена.")
+
+    return "\n".join(lines)
 
 
 def build_admin_payments_text(student_name: str, balance: int, payments: list) -> str:
@@ -889,11 +1284,76 @@ def build_admin_homework_list_text(items: list) -> str:
         return "📋 <b>Активные ДЗ</b>\n\nСейчас активных заданий нет."
     lines = [f"📋 <b>Активные ДЗ</b> ({len(items)})"]
     for item in items:
+        body_html = homework_body_html(
+            item.get("title"),
+            item.get("description"),
+            item.get("attachment_name"),
+            item.get("attachment_mime_type"),
+        ) or "—"
         lines.extend([
             "",
             f"• <b>{html.quote(item['full_name'])}</b>",
-            f"  📝 {item['title']}",
+            f"  📝 Задание:\n{body_html}",
             f"  📅 До {format_date(item.get('deadline'))}",
         ])
-    lines.extend(["", "Выберите задание ниже, если нужно удалить его из списка."])
+    lines.extend(["", "Выберите задание ниже, если нужно открыть, отредактировать или удалить его."])
+    return "\n".join(lines)
+
+
+def build_admin_homework_description_prompt(
+    student_name: str | None,
+    recent_mentions: list,
+    top_materials: list,
+    latest_mention,
+    has_homework_history: bool,
+) -> str:
+    student_name = (student_name or "").strip()
+    intro = []
+    if student_name:
+        intro = [
+            "📝 <b>Новое домашнее задание</b>",
+            "",
+            f"👤 Ученик: <b>{html.quote(student_name)}</b>",
+            "",
+        ]
+
+    if not has_homework_history:
+        return ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT
+
+    if not recent_mentions:
+        lines = intro + [
+            "📚 <b>По прошлым ДЗ</b>",
+            "Статистика по учебникам или книгам пока не накоплена.",
+            "",
+            ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT,
+        ]
+        return "\n".join(lines)
+
+    lines = intro + ["📚 <b>По прошлым ДЗ</b>"]
+    for item in recent_mentions[:3]:
+        progress = material_progress_label(item)
+        date_value = (
+            _item_value(item, "homework_created_at")
+            or _item_value(item, "homework_deadline")
+            or _item_value(item, "created_at")
+        )
+        summary_parts = [progress] if progress else []
+        if date_value:
+            summary_parts.append(format_date(date_value))
+        suffix = f" · {' · '.join(summary_parts)}" if summary_parts else ""
+        lines.append(f"• <b>{html.quote(str(_item_value(item, 'material_title') or '—'))}</b>{html.quote(suffix)}")
+
+    if top_materials:
+        lines.extend(["", "📈 <b>Чаще всего</b>"])
+        for item in top_materials[:3]:
+            count = int(_item_value(item, "mentions_count") or 0)
+            lines.append(
+                f"• <b>{html.quote(str(_item_value(item, 'material_title') or '—'))}</b> · {count} упомин."
+            )
+
+    hint_text = build_next_homework_hint(latest_mention, recent_mentions)
+    if hint_text:
+        lines.extend(["", "💡 <b>Подсказка</b>", html.quote(hint_text)])
+
+    lines.extend(["", ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT])
     return "\n".join(lines)

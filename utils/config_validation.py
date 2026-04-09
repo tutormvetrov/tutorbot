@@ -14,13 +14,21 @@ _CALENDAR_ID_PLACEHOLDERS = {
     "your_calendar_id@group.calendar.google.com",
 }
 _SYSTEMD_SCOPES = {"system", "user"}
+_VALIDATION_MODES = {"local", "runtime"}
 
 
 def _is_missing(value: str) -> bool:
     return not str(value or "").strip()
 
 
-def _validate_google_config(issues: list[str]) -> None:
+def _normalize_validation_mode(mode: str | None) -> str:
+    normalized = str(mode or "runtime").strip().lower()
+    if normalized not in _VALIDATION_MODES:
+        raise ValueError(f"Unsupported validation mode: {mode}")
+    return normalized
+
+
+def _validate_google_config(issues: list[str], mode: str) -> None:
     raw_calendar_id = str(os.getenv("GOOGLE_CALENDAR_ID", "")).strip()
     raw_credentials_path = str(os.getenv("GOOGLE_CREDENTIALS_FILE", "")).strip()
     google_requested = bool(config.GOOGLE_CALENDAR_ID or raw_credentials_path)
@@ -35,13 +43,14 @@ def _validate_google_config(issues: list[str]) -> None:
 
     if _is_missing(config.GOOGLE_CREDENTIALS_FILE):
         issues.append("GOOGLE_CREDENTIALS_FILE must be set when Google Calendar sync is enabled.")
-    elif not Path(config.GOOGLE_CREDENTIALS_FILE).exists():
+    elif mode == "runtime" and not Path(config.GOOGLE_CREDENTIALS_FILE).exists():
         issues.append(
             f"GOOGLE_CREDENTIALS_FILE does not exist: {config.GOOGLE_CREDENTIALS_FILE}"
         )
 
 
-def collect_runtime_config_issues() -> list[str]:
+def collect_runtime_config_issues(mode: str = "runtime") -> list[str]:
+    mode = _normalize_validation_mode(mode)
     issues: list[str] = []
 
     if config.BOT_TOKEN in _BOT_TOKEN_PLACEHOLDERS:
@@ -49,6 +58,8 @@ def collect_runtime_config_issues() -> list[str]:
     elif ":" not in config.BOT_TOKEN:
         issues.append("BOT_TOKEN must look like a Telegram token (`<id>:<secret>`).")
 
+    if config.ADMIN_ID_RAW and config.ADMIN_ID <= 0:
+        issues.append("ADMIN_ID must be an integer.")
     if config.ADMIN_ID <= 0:
         issues.append("ADMIN_ID must be a positive integer.")
 
@@ -75,14 +86,17 @@ def collect_runtime_config_issues() -> list[str]:
     if config.TUTORBOT_SYSTEMD_SCOPE not in _SYSTEMD_SCOPES:
         issues.append("TUTORBOT_SYSTEMD_SCOPE must be either `system` or `user`.")
 
-    if not config.TUTORBOT_ROOT.exists():
+    if config.BUSINESS_TIMEZONE_ERROR:
+        issues.append(f"TUTORBOT_TIMEZONE is invalid: {config.BUSINESS_TIMEZONE_ERROR}")
+
+    if mode == "runtime" and not config.TUTORBOT_ROOT.exists():
         issues.append(f"TUTORBOT_ROOT does not exist: {config.TUTORBOT_ROOT}")
 
     backup_parent = config.TUTORBOT_BACKUP_DIR.parent
-    if not backup_parent.exists():
+    if mode == "runtime" and not backup_parent.exists():
         issues.append(f"TUTORBOT_BACKUP_DIR parent directory does not exist: {backup_parent}")
 
-    _validate_google_config(issues)
+    _validate_google_config(issues, mode)
     return issues
 
 
@@ -94,7 +108,7 @@ def format_runtime_config_issues(issues: list[str]) -> str:
     return "\n".join(lines)
 
 
-def assert_runtime_config() -> None:
-    issues = collect_runtime_config_issues()
+def assert_runtime_config(mode: str = "runtime") -> None:
+    issues = collect_runtime_config_issues(mode=mode)
     if issues:
         raise RuntimeError(format_runtime_config_issues(issues))

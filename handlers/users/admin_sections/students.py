@@ -4,9 +4,11 @@ from aiogram.fsm.context import FSMContext
 
 from data.config import is_internal_test_account
 from handlers.users.admin_sections.common import (
+    MessageEditor,
     extract_broadcast_payload,
     get_message_origin,
     is_admin,
+    message_to_html,
     q,
     restore_admin_view,
 )
@@ -16,14 +18,27 @@ from keyboards.inline import (
     make_back_button_keyboard,
     make_admin_lesson_formats_keyboard,
     make_admin_speech_styles_keyboard,
+    make_admin_student_actions_keyboard,
     make_admin_student_card_keyboard,
+    make_admin_student_danger_keyboard,
+    make_admin_student_danger_confirm_keyboard,
+    make_admin_student_danger_review_keyboard,
+    make_admin_student_settings_keyboard,
     make_admin_students_list_keyboard,
     make_deactivate_confirm_keyboard,
+    make_deactivate_review_keyboard,
     make_delete_confirm_keyboard,
+    make_delete_review_keyboard,
     make_student_select_keyboard,
     make_teacher_reply_keyboard,
 )
-from states.registration import AdminAddStudent, AdminManageStudent, AdminWriteToStudent
+from states.registration import (
+    AdminAddStudent,
+    AdminLessonFollowup,
+    AdminManageStudent,
+    AdminStudentsDirectory,
+    AdminWriteToStudent,
+)
 from utils.db_api.postgresql import Database
 from utils.ui_text import (
     ADMIN_LESSON_FORMATS_EMPTY_TEXT,
@@ -34,6 +49,7 @@ from utils.ui_text import (
     build_action_result_text,
     build_admin_students_page_text,
     build_admin_student_card_text,
+    format_datetime,
     lesson_format_label,
 )
 from utils.speech import normalize_speech_style, speech_style_label
@@ -41,6 +57,17 @@ from utils.speech import normalize_speech_style, speech_style_label
 router = Router()
 
 ADMIN_STUDENTS_PAGE_SIZE = 5
+ADMIN_STUDENT_FILTER_LABELS = {
+    "all": "Все",
+    "attention": "Нужно внимание",
+    "zero_balance": "0 на балансе",
+    "no_upcoming": "Без урока",
+}
+ADMIN_STUDENT_SORT_LABELS = {
+    "name": "По имени",
+    "balance": "По балансу",
+    "lesson": "По ближайшему уроку",
+}
 
 
 def _build_student_summary_line(student, index: int) -> str:
@@ -61,24 +88,142 @@ def _build_student_summary_line(student, index: int) -> str:
     )
 
 
-async def _render_admin_students_page(message: types.Message, db: Database, page: int = 0):
-    students = await db.get_students_overview()
+def _normalize_admin_students_filter(value: str | None) -> str:
+    if value in ADMIN_STUDENT_FILTER_LABELS:
+        return value
+    return "all"
+
+
+def _normalize_admin_students_query(value: str | None) -> str:
+    return " ".join((value or "").strip().split())
+
+
+async def _get_admin_students_view_state(state: FSMContext | None) -> tuple[str, str, str]:
+    if state is None:
+        return "all", "", "name"
+    data = await state.get_data()
+    return (
+        _normalize_admin_students_filter(data.get("admin_students_filter")),
+        _normalize_admin_students_query(data.get("admin_students_query")),
+        _normalize_admin_students_sort(data.get("admin_students_sort")),
+    )
+
+
+def _normalize_admin_students_sort(value: str | None) -> str:
+    if value in ADMIN_STUDENT_SORT_LABELS:
+        return value
+    return "name"
+
+
+def _student_matches_admin_filter(student, filter_key: str, query: str) -> bool:
+    balance = int(student.get("lesson_balance") or 0)
+    has_upcoming = bool(student.get("next_lesson_date"))
+
+    if filter_key == "attention" and balance > 0 and has_upcoming:
+        return False
+    if filter_key == "zero_balance" and balance != 0:
+        return False
+    if filter_key == "no_upcoming" and has_upcoming:
+        return False
+
+    if query:
+        haystack = " ".join([
+            str(student.get("telegram_id") or ""),
+            student.get("full_name") or "",
+            student.get("language") or "",
+            student.get("level") or "",
+        ]).lower()
+        for token in query.lower().split():
+            if token not in haystack:
+                return False
+
+    return True
+
+
+def _filter_admin_students(students: list, filter_key: str, query: str) -> list:
+    return [
+        student
+        for student in students
+        if _student_matches_admin_filter(student, filter_key, query)
+    ]
+
+
+def _sort_admin_students(students: list, sort_key: str) -> list:
+    items = list(students or [])
+    if sort_key == "balance":
+        return sorted(
+            items,
+            key=lambda student: (
+                int(student.get("lesson_balance") or 0),
+                not bool(student.get("next_lesson_date")),
+                student.get("next_lesson_date") or 0,
+                (student.get("full_name") or "").casefold(),
+            ),
+        )
+    if sort_key == "lesson":
+        return sorted(
+            items,
+            key=lambda student: (
+                not bool(student.get("next_lesson_date")),
+                student.get("next_lesson_date") or 0,
+                int(student.get("lesson_balance") or 0),
+                (student.get("full_name") or "").casefold(),
+            ),
+        )
+    return sorted(
+        items,
+        key=lambda student: (
+            (student.get("full_name") or "").casefold(),
+            int(student.get("lesson_balance") or 0),
+        ),
+    )
+
+
+async def _render_admin_students_page(
+    message: types.Message,
+    db: Database,
+    page: int = 0,
+    state: FSMContext | None = None,
+):
+    students = list(await db.get_students_overview() or [])
 
     if not students:
         await message.edit_text(ADMIN_STUDENTS_EMPTY_TEXT, reply_markup=back_to_admin_keyboard)
         return
 
-    total_pages = max(1, (len(students) + ADMIN_STUDENTS_PAGE_SIZE - 1) // ADMIN_STUDENTS_PAGE_SIZE)
+    filter_key, query, sort_key = await _get_admin_students_view_state(state)
+    filtered_students = _sort_admin_students(
+        _filter_admin_students(students, filter_key, query),
+        sort_key,
+    )
+    total_pages = max(1, (len(filtered_students) + ADMIN_STUDENTS_PAGE_SIZE - 1) // ADMIN_STUDENTS_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
-    start = page * ADMIN_STUDENTS_PAGE_SIZE
-    page_items = students[start:start + ADMIN_STUDENTS_PAGE_SIZE]
+    if state is not None:
+        await state.set_state(AdminStudentsDirectory.browsing)
+        await state.update_data(
+            admin_students_filter=filter_key,
+            admin_students_query=query,
+            admin_students_sort=sort_key,
+            admin_students_page=page,
+        )
 
     await message.edit_text(
-        build_admin_students_page_text(students, page, ADMIN_STUDENTS_PAGE_SIZE),
+        build_admin_students_page_text(
+            filtered_students,
+            page,
+            ADMIN_STUDENTS_PAGE_SIZE,
+            filter_label=ADMIN_STUDENT_FILTER_LABELS.get(filter_key, ADMIN_STUDENT_FILTER_LABELS["all"]),
+            query=query,
+            sort_label=ADMIN_STUDENT_SORT_LABELS.get(sort_key, ADMIN_STUDENT_SORT_LABELS["name"]),
+            total_count=len(students),
+        ),
         reply_markup=make_admin_students_list_keyboard(
-            students,
+            filtered_students,
             page=page,
             page_size=ADMIN_STUDENTS_PAGE_SIZE,
+            active_filter=filter_key,
+            active_sort=sort_key,
+            has_query=bool(query),
         ),
     )
 
@@ -99,19 +244,72 @@ async def _render_admin_student_card(message: types.Message, db: Database, stude
 
     await message.edit_text(
         build_admin_student_card_text(student, balance, next_lesson),
-        reply_markup=make_admin_student_card_keyboard(
+        reply_markup=make_admin_student_card_keyboard(student_id, page),
+    )
+
+
+async def _render_admin_student_actions(message: types.Message, db: Database, student_id: int, page: int):
+    student = await db.get_user(student_id)
+    if not student or student["role"] != "student" or student["is_active"] is False:
+        await message.edit_text("⚠️ Ученик не найден или уже деактивирован.", reply_markup=back_to_admin_keyboard)
+        return
+    await message.edit_text(
+        "\n".join([
+            f"⚡ <b>Действия: {q(student['full_name'])}</b>",
+            "",
+            "Здесь собраны быстрые рабочие действия по ученику.",
+        ]),
+        reply_markup=make_admin_student_actions_keyboard(student_id, page),
+    )
+
+
+async def _render_admin_student_settings(message: types.Message, db: Database, student_id: int, page: int):
+    student = await db.get_user(student_id)
+    if not student or student["role"] != "student" or student["is_active"] is False:
+        await message.edit_text("⚠️ Ученик не найден или уже деактивирован.", reply_markup=back_to_admin_keyboard)
+        return
+    await message.edit_text(
+        "\n".join([
+            f"⚙️ <b>Настройки: {q(student['full_name'])}</b>",
+            "",
+            "Здесь можно менять формат занятий, обращение и длительность урока.",
+        ]),
+        reply_markup=make_admin_student_settings_keyboard(
             student_id,
             page,
             lesson_format=student.get("lesson_format") or "online",
             speech_style=student.get("speech_style") or "formal",
+            lesson_duration_minutes=int(student.get("lesson_duration_minutes") or 90),
         ),
     )
 
 
-def _write_to_student_result_keyboard(student_id: int, page: int | None):
+async def _render_admin_student_danger(message: types.Message, db: Database, student_id: int, page: int):
+    student = await db.get_user(student_id)
+    if not student or student["role"] != "student" or student["is_active"] is False:
+        await message.edit_text("⚠️ Ученик не найден или уже деактивирован.", reply_markup=back_to_admin_keyboard)
+        return
+    await message.edit_text(
+        "\n".join([
+            f"🛡 <b>Опасные действия: {q(student['full_name'])}</b>",
+            "",
+            "Эти действия меняют доступ ученика или полностью удаляют профиль.",
+        ]),
+        reply_markup=make_admin_student_danger_keyboard(student_id, page),
+    )
+
+
+def _write_to_student_result_keyboard(student_id: int, page: int | None, source: str = "card"):
     if page is not None:
-        return make_back_button_keyboard("◀️ К карточке ученика", f"admin:student_card:{student_id}:{page}")
+        target = f"admin:student_{source}:{student_id}:{page}" if source in {"actions", "settings", "danger"} else f"admin:student_card:{student_id}:{page}"
+        return make_back_button_keyboard("◀️ К ученику", target)
     return back_to_admin_keyboard
+
+
+def _followup_prompt_context(lesson: dict | None) -> tuple[str, str]:
+    student_name = q(lesson.get("full_name")) if lesson else "—"
+    lesson_label = format_datetime(lesson.get("lesson_date")) if lesson else "—"
+    return student_name, lesson_label
 
 
 async def _render_admin_lesson_formats(message: types.Message, db: Database):
@@ -173,22 +371,180 @@ async def _render_admin_speech_styles(message: types.Message, db: Database):
 
 
 @router.callback_query(lambda c: c.data == "admin:students")
-async def admin_students(callback_query: types.CallbackQuery, db: Database):
+async def admin_students(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
-    await _render_admin_students_page(callback_query.message, db, page=0)
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await state.update_data(
+        admin_students_filter="all",
+        admin_students_query="",
+        admin_students_sort="name",
+        admin_students_page=0,
+    )
+    await _render_admin_students_page(callback_query.message, db, page=0, state=state)
     await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:students:page:"))
-async def admin_students_page(callback_query: types.CallbackQuery, db: Database):
+async def admin_students_page(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
     page = int(callback_query.data.split(":")[3])
-    await _render_admin_students_page(callback_query.message, db, page=page)
+    await _render_admin_students_page(callback_query.message, db, page=page, state=state)
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:students:filter:"))
+async def admin_students_filter(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    filter_key = _normalize_admin_students_filter(callback_query.data.split(":")[3])
+    _, query, sort_key = await _get_admin_students_view_state(state)
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await state.update_data(
+        admin_students_filter=filter_key,
+        admin_students_query=query,
+        admin_students_sort=sort_key,
+        admin_students_page=0,
+    )
+    await _render_admin_students_page(callback_query.message, db, page=0, state=state)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:students:sort:"))
+async def admin_students_sort(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    sort_key = _normalize_admin_students_sort(callback_query.data.split(":")[3])
+    filter_key, query, _ = await _get_admin_students_view_state(state)
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await state.update_data(
+        admin_students_filter=filter_key,
+        admin_students_query=query,
+        admin_students_sort=sort_key,
+        admin_students_page=0,
+    )
+    await _render_admin_students_page(callback_query.message, db, page=0, state=state)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:students:reset")
+async def admin_students_reset(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await state.update_data(
+        admin_students_filter="all",
+        admin_students_query="",
+        admin_students_sort="name",
+        admin_students_page=0,
+    )
+    await _render_admin_students_page(callback_query.message, db, page=0, state=state)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:students:search_clear")
+async def admin_students_search_clear(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    filter_key, _, sort_key = await _get_admin_students_view_state(state)
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await state.update_data(
+        admin_students_filter=filter_key,
+        admin_students_query="",
+        admin_students_sort=sort_key,
+        admin_students_page=0,
+    )
+    await _render_admin_students_page(callback_query.message, db, page=0, state=state)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:students:search")
+async def admin_students_search_start(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    filter_key, query, sort_key = await _get_admin_students_view_state(state)
+    origin_chat_id, origin_message_id = get_message_origin(callback_query.message, callback_query.from_user.id)
+    hint_lines = []
+    if query:
+        hint_lines.extend([
+            f"Текущий поиск: <b>{q(query)}</b>",
+            "",
+        ])
+
+    await state.set_state(AdminStudentsDirectory.waiting_for_search)
+    await state.update_data(
+        admin_students_filter=filter_key,
+        admin_students_query=query,
+        admin_students_sort=sort_key,
+        admin_origin_chat_id=origin_chat_id,
+        admin_origin_message_id=origin_message_id,
+    )
+    await callback_query.message.edit_text(
+        "\n".join([
+            "🔎 <b>Поиск ученика</b>",
+            "",
+            *hint_lines,
+            "Введите имя, часть имени, язык, уровень или Telegram ID одним сообщением.",
+        ]),
+        reply_markup=make_back_button_keyboard("◀️ К списку учеников", "admin:students:search_back"),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:students:search_back")
+async def admin_students_search_back(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    data = await state.get_data()
+    page = int(data.get("admin_students_page") or 0)
+    await state.set_state(AdminStudentsDirectory.browsing)
+    await _render_admin_students_page(callback_query.message, db, page=page, state=state)
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminStudentsDirectory.waiting_for_search))
+async def admin_students_search_submit(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Поиск доступен только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+
+    query = _normalize_admin_students_query(message.text)
+    if not query:
+        await message.answer(
+            "⚠️ Введите имя или часть имени.",
+            reply_markup=make_back_button_keyboard("◀️ К списку учеников", "admin:students:search_back"),
+        )
+        return
+
+    data = await state.get_data()
+    origin_chat_id = data.get("admin_origin_chat_id")
+    origin_message_id = data.get("admin_origin_message_id")
+
+    await state.update_data(admin_students_query=query, admin_students_page=0)
+    await state.set_state(AdminStudentsDirectory.browsing)
+
+    if origin_chat_id is None or origin_message_id is None:
+        await message.answer("⚠️ Не удалось вернуть список. Откройте раздел «Ученики» заново.", reply_markup=back_to_admin_keyboard)
+        return
+
+    target = MessageEditor(message.bot, origin_chat_id, origin_message_id)
+    await _render_admin_students_page(target, db, page=0, state=state)
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:student_card:"))
@@ -201,6 +557,36 @@ async def admin_student_card(callback_query: types.CallbackQuery, db: Database):
     await callback_query.answer()
 
 
+@router.callback_query(lambda c: c.data.startswith("admin:student_actions:"))
+async def admin_student_actions(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    _, _, student_id_str, page_str = callback_query.data.split(":")
+    await _render_admin_student_actions(callback_query.message, db, int(student_id_str), int(page_str))
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_settings:"))
+async def admin_student_settings(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    _, _, student_id_str, page_str = callback_query.data.split(":")
+    await _render_admin_student_settings(callback_query.message, db, int(student_id_str), int(page_str))
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_danger:"))
+async def admin_student_danger(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    _, _, student_id_str, page_str = callback_query.data.split(":")
+    await _render_admin_student_danger(callback_query.message, db, int(student_id_str), int(page_str))
+    await callback_query.answer()
+
+
 @router.callback_query(lambda c: c.data.startswith("admin:write_to_student:"))
 async def admin_write_to_student_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not is_admin(callback_query.from_user.id):
@@ -210,6 +596,7 @@ async def admin_write_to_student_start(callback_query: types.CallbackQuery, stat
     parts = callback_query.data.split(":")
     student_id = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+    source = parts[4] if len(parts) > 4 else "card"
     student = await db.get_user(student_id)
     if not student or student["role"] != "student":
         await callback_query.answer("Ученик не найден.", show_alert=True)
@@ -220,15 +607,54 @@ async def admin_write_to_student_start(callback_query: types.CallbackQuery, stat
     await state.update_data(
         student_id=student_id,
         student_name=student["full_name"],
-        admin_return_view=f"admin:student_card:{student_id}:{page}" if page is not None else None,
+        admin_return_view=(
+            f"admin:student_{source}:{student_id}:{page}"
+            if page is not None and source in {"actions", "settings", "danger"}
+            else (f"admin:student_card:{student_id}:{page}" if page is not None else None)
+        ),
         admin_origin_chat_id=origin_chat_id if page is not None else None,
         admin_origin_message_id=origin_message_id if page is not None else None,
         admin_student_card_page=page,
+        admin_student_card_source=source,
     )
     await state.set_state(AdminWriteToStudent.waiting_for_message)
-    await callback_query.message.answer(
+    await callback_query.message.edit_text(
         f"✉️ Отправьте сообщение для ученика <b>{q(student['full_name'])}</b>.\n\n"
         "Можно отправить текст, GIF, стикер, фото, документ, голосовое или видео.",
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_duration:"))
+async def admin_student_duration_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    _, _, student_id_str, page_str = callback_query.data.split(":")
+    student_id = int(student_id_str)
+    page = int(page_str)
+    student = await db.get_user(student_id)
+    if not student or student["role"] != "student":
+        await callback_query.answer("Ученик не найден.", show_alert=True)
+        return
+
+    origin_chat_id, origin_message_id = get_message_origin(callback_query.message, callback_query.from_user.id)
+    await state.clear()
+    await state.update_data(
+        student_id=student_id,
+        student_name=student["full_name"],
+        admin_return_view=f"admin:student_settings:{student_id}:{page}",
+        admin_origin_chat_id=origin_chat_id,
+        admin_origin_message_id=origin_message_id,
+        admin_student_card_page=page,
+        admin_student_card_source="settings",
+    )
+    await state.set_state(AdminLessonFollowup.waiting_for_lesson_duration)
+    await callback_query.message.edit_text(
+        f"⏱ Введите длительность урока для <b>{q(student['full_name'])}</b> в минутах.\n\n"
+        "Разрешён диапазон: <code>30..180</code>.",
         reply_markup=cancel_fsm_keyboard,
     )
     await callback_query.answer()
@@ -252,6 +678,7 @@ async def admin_write_to_student_send(message: types.Message, state: FSMContext,
     data = await state.get_data()
     student_id = data["student_id"]
     page = data.get("admin_student_card_page")
+    source = data.get("admin_student_card_source", "card")
     student = await db.get_user(student_id)
     if not student or student["role"] != "student":
         await state.clear()
@@ -293,8 +720,200 @@ async def admin_write_to_student_send(message: types.Message, state: FSMContext,
             f"Ученик: <b>{q(student['full_name'])}</b>.",
             next_step="При необходимости можно сразу отправить ещё одно сообщение из карточки ученика.",
         ),
-        reply_markup=_write_to_student_result_keyboard(student_id, page),
+        reply_markup=_write_to_student_result_keyboard(student_id, page, source),
     )
+
+
+@router.message(StateFilter(AdminLessonFollowup.waiting_for_lesson_duration))
+async def admin_student_duration_save(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Изменение доступно только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+
+    try:
+        minutes = int((message.text or "").strip())
+    except ValueError:
+        minutes = 0
+
+    if not 30 <= minutes <= 180:
+        await message.answer(
+            "⚠️ Нужна целая длительность в диапазоне <code>30..180</code> минут.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    data = await state.get_data()
+    student_id = data["student_id"]
+    student_name = q(data.get("student_name") or student_id)
+    page = data.get("admin_student_card_page")
+    source = data.get("admin_student_card_source", "card")
+    await db.set_lesson_duration(student_id, minutes)
+
+    await state.clear()
+    await restore_admin_view(
+        message.bot,
+        db,
+        data.get("admin_origin_chat_id"),
+        data.get("admin_origin_message_id"),
+        data.get("admin_return_view"),
+    )
+    await message.answer(
+        build_action_result_text(
+            "Длительность урока обновлена",
+            f"👤 Ученик: <b>{student_name}</b>\n⏱ Новая длительность: <b>{minutes} мин</b>",
+            next_step="Новая длительность уже будет учитываться в post-lesson сообщениях.",
+        ),
+        reply_markup=_write_to_student_result_keyboard(student_id, page, source),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("lesson_followup:comment:"))
+async def lesson_followup_comment_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    lesson_id = int(callback_query.data.split(":")[2])
+    lesson = await db.get_lesson_context(lesson_id)
+    if not lesson:
+        await callback_query.answer("Урок не найден.", show_alert=True)
+        return
+
+    student_name, lesson_label = _followup_prompt_context(lesson)
+    await state.clear()
+    await state.update_data(
+        followup_lesson_id=lesson_id,
+        followup_student_id=lesson["student_id"],
+        followup_student_name=student_name,
+        followup_lesson_label=lesson_label,
+    )
+    await state.set_state(AdminLessonFollowup.waiting_for_lesson_comment)
+    await callback_query.message.edit_text(
+        f"💬 Напишите приватный комментарий по уроку с <b>{student_name}</b>.\n"
+        f"📅 Урок: <b>{lesson_label}</b>",
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminLessonFollowup.waiting_for_lesson_comment))
+async def lesson_followup_comment_save(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Сохранение доступно только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+
+    comment_html = message_to_html(message)
+    if not comment_html:
+        await message.answer(
+            "⚠️ Пришлите текстовый комментарий по уроку.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    data = await state.get_data()
+    await db.save_teacher_comment(data["followup_lesson_id"], comment_html)
+    await state.clear()
+    await message.answer(
+        build_action_result_text(
+            "Комментарий сохранён",
+            f"👤 Ученик: <b>{data['followup_student_name']}</b>\n📅 Урок: <b>{data['followup_lesson_label']}</b>",
+            next_step="Комментарий привязан только к этому уроку и не попадёт в reminder перед следующим занятием.",
+        ),
+        reply_markup=back_to_admin_keyboard,
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("lesson_followup:bookmark:"))
+async def lesson_followup_bookmark_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    _, _, lesson_id_str, student_id_str = callback_query.data.split(":")
+    lesson_id = int(lesson_id_str)
+    student_id = int(student_id_str)
+    lesson = await db.get_lesson_context(lesson_id)
+    if not lesson or lesson["student_id"] != student_id:
+        await callback_query.answer("Урок или ученик не найдены.", show_alert=True)
+        return
+
+    student_name, lesson_label = _followup_prompt_context(lesson)
+    await state.clear()
+    await state.update_data(
+        followup_lesson_id=lesson_id,
+        followup_student_id=student_id,
+        followup_student_name=student_name,
+        followup_lesson_label=lesson_label,
+    )
+    await state.set_state(AdminLessonFollowup.waiting_for_lesson_bookmark)
+    await callback_query.message.edit_text(
+        f"📖 Напишите закладку по учебнику или книге для <b>{student_name}</b>.\n"
+        f"📅 Последний урок: <b>{lesson_label}</b>\n\n"
+        "Этот текст придёт вам перед следующим занятием с этим учеником.",
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminLessonFollowup.waiting_for_lesson_bookmark))
+async def lesson_followup_bookmark_save(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Сохранение доступно только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+
+    bookmark_html = message_to_html(message)
+    if not bookmark_html:
+        await message.answer(
+            "⚠️ Пришлите текстовую закладку по учебнику или книге.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    data = await state.get_data()
+    await db.save_student_bookmark(
+        data["followup_student_id"],
+        data["followup_lesson_id"],
+        bookmark_html,
+        "saved",
+    )
+    await state.clear()
+    await message.answer(
+        build_action_result_text(
+            "Закладка сохранена",
+            f"👤 Ученик: <b>{data['followup_student_name']}</b>\n📅 Последний урок: <b>{data['followup_lesson_label']}</b>",
+            next_step="Перед следующим уроком бот пришлёт вам эту закладку автоматически.",
+        ),
+        reply_markup=back_to_admin_keyboard,
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("lesson_followup:no_material:"))
+async def lesson_followup_no_material(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    _, _, lesson_id_str, student_id_str = callback_query.data.split(":")
+    lesson_id = int(lesson_id_str)
+    student_id = int(student_id_str)
+    lesson = await db.get_lesson_context(lesson_id)
+    if not lesson or lesson["student_id"] != student_id:
+        await callback_query.answer("Урок или ученик не найдены.", show_alert=True)
+        return
+
+    await db.save_student_bookmark(student_id, lesson_id, None, "no_material")
+    await callback_query.message.edit_text(
+        build_action_result_text(
+            "Закладка очищена",
+            f"👤 Ученик: <b>{q(lesson['full_name'])}</b>\n📅 Последний урок: <b>{format_datetime(lesson.get('lesson_date'))}</b>",
+            next_step="Перед следующим уроком бот всё равно напомнит, что по учебнику или книге в прошлый раз не работали.",
+        ),
+        reply_markup=back_to_admin_keyboard,
+    )
+    await callback_query.answer("Отмечено: без учебника/книги")
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:student_format:"))
@@ -309,7 +928,7 @@ async def admin_student_format_toggle(callback_query: types.CallbackQuery, db: D
     student_id = int(student_id_str)
     page = int(page_str)
     await db.set_lesson_format(student_id, target_format)
-    await _render_admin_student_card(callback_query.message, db, student_id, page)
+    await _render_admin_student_settings(callback_query.message, db, student_id, page)
     await callback_query.answer(f"Формат переключён: {lesson_format_label(target_format)}")
 
 
@@ -323,7 +942,7 @@ async def admin_student_speech_style_toggle(callback_query: types.CallbackQuery,
     student_id = int(student_id_str)
     page = int(page_str)
     await db.set_speech_style(student_id, target_style)
-    await _render_admin_student_card(callback_query.message, db, student_id, page)
+    await _render_admin_student_settings(callback_query.message, db, student_id, page)
     await callback_query.answer(f"Обращение переключено: {speech_style_label(target_style)}")
 
 
@@ -378,20 +997,45 @@ async def admin_student_deactivate_prompt(callback_query: types.CallbackQuery, d
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
-    _, _, _, student_id_str, page_str = callback_query.data.split(":")
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
     student_id = int(student_id_str)
     page = int(page_str)
     student = await db.get_user(student_id)
     name = q(student["full_name"]) if student else str(student_id)
-    from keyboards.inline import make_admin_student_danger_confirm_keyboard
 
     await callback_query.message.edit_text(
         f"🗑 <b>Деактивировать ученика {name}?</b>\n\n"
         "Ученик потеряет доступ к боту, но история занятий и оплат сохранится.",
+        reply_markup=make_admin_student_danger_review_keyboard(
+            f"admin:student_deactivate_review:{student_id}:{page}",
+            f"admin:student_danger:{student_id}:{page}",
+            "⚠️ Перейти к подтверждению",
+        ),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_deactivate_review:"))
+async def admin_student_deactivate_review(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
+    student_id = int(student_id_str)
+    page = int(page_str)
+    student = await db.get_user(student_id)
+    name = q(student["full_name"]) if student else str(student_id)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "⚠️ <b>Финальное подтверждение</b>",
+            "",
+            f"Ученик <b>{name}</b> потеряет доступ к боту сразу после этого шага.",
+            "История занятий и оплат сохранится.",
+        ]),
         reply_markup=make_admin_student_danger_confirm_keyboard(
             f"admin:student_deactivate_confirm:{student_id}:{page}",
-            f"admin:student_card:{student_id}:{page}",
-            "✅ Подтвердить деактивацию",
+            f"admin:student_danger:{student_id}:{page}",
+            "✅ Деактивировать ученика",
         ),
     )
     await callback_query.answer()
@@ -402,7 +1046,7 @@ async def admin_student_deactivate_confirm_direct(callback_query: types.Callback
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
-    _, _, _, student_id_str, page_str = callback_query.data.split(":")
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
     student_id = int(student_id_str)
     page = int(page_str)
     student = await db.get_user(student_id)
@@ -414,11 +1058,7 @@ async def admin_student_deactivate_confirm_direct(callback_query: types.Callback
             f"Профиль <b>{name}</b> отключён, а история занятий и оплат сохранена.",
             next_step="При необходимости ученика можно снова добавить или зарегистрировать заново.",
         ),
-        reply_markup=make_admin_students_list_keyboard(
-            await db.get_students_overview(),
-            page=page,
-            page_size=ADMIN_STUDENTS_PAGE_SIZE,
-        ),
+        reply_markup=make_back_button_keyboard("◀️ К списку учеников", f"admin:students:page:{page}"),
     )
     await callback_query.answer()
 
@@ -428,13 +1068,12 @@ async def admin_student_delete_prompt(callback_query: types.CallbackQuery, db: D
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
-    _, _, _, student_id_str, page_str = callback_query.data.split(":")
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
     student_id = int(student_id_str)
     page = int(page_str)
     student = await db.get_user(student_id)
     name = q(student["full_name"]) if student else str(student_id)
     snapshot = await db.get_user_deletion_snapshot(student_id)
-    from keyboards.inline import make_admin_student_danger_confirm_keyboard
 
     await callback_query.message.edit_text(
         f"💀 <b>Удалить ученика {name}?</b>\n\n"
@@ -442,10 +1081,36 @@ async def admin_student_delete_prompt(callback_query: types.CallbackQuery, db: D
         f"💳 Платежей: <b>{snapshot.get('payments_as_student', 0)}</b>\n"
         f"📚 Домашних заданий: <b>{snapshot.get('homework', 0)}</b>\n\n"
         "Это действие необратимо.",
+        reply_markup=make_admin_student_danger_review_keyboard(
+            f"admin:student_delete_review:{student_id}:{page}",
+            f"admin:student_danger:{student_id}:{page}",
+            "⚠️ Перейти к подтверждению",
+        ),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_delete_review:"))
+async def admin_student_delete_review(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
+    student_id = int(student_id_str)
+    page = int(page_str)
+    student = await db.get_user(student_id)
+    name = q(student["full_name"]) if student else str(student_id)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "⚠️ <b>Финальное подтверждение</b>",
+            "",
+            f"Профиль <b>{name}</b> будет удалён вместе с уроками, оплатами и домашними заданиями.",
+            "После этого восстановление из интерфейса невозможно.",
+        ]),
         reply_markup=make_admin_student_danger_confirm_keyboard(
             f"admin:student_delete_confirm:{student_id}:{page}",
-            f"admin:student_card:{student_id}:{page}",
-            "💀 Подтвердить удаление",
+            f"admin:student_danger:{student_id}:{page}",
+            "💀 Удалить навсегда",
         ),
     )
     await callback_query.answer()
@@ -456,28 +1121,20 @@ async def admin_student_delete_confirm_direct(callback_query: types.CallbackQuer
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
-    _, _, _, student_id_str, page_str = callback_query.data.split(":")
+    _, _, student_id_str, page_str = callback_query.data.split(":", 3)
     student_id = int(student_id_str)
     page = int(page_str)
     student = await db.get_user(student_id)
     name = q(student["full_name"]) if student else str(student_id)
     await db.delete_user_fully(student_id)
-    students = await db.get_students_overview()
-    if not students:
-        await callback_query.message.edit_text(ADMIN_STUDENTS_EMPTY_TEXT, reply_markup=back_to_admin_keyboard)
-    else:
-        await callback_query.message.edit_text(
-            build_action_result_text(
-                "Ученик удалён",
-                f"Профиль <b>{name}</b> полностью удалён из базы.",
-                next_step="Если человек снова запустит /start, он пройдёт регистрацию заново.",
-            ),
-            reply_markup=make_admin_students_list_keyboard(
-                students,
-                page=min(page, max(0, (len(students) - 1) // ADMIN_STUDENTS_PAGE_SIZE)),
-                page_size=ADMIN_STUDENTS_PAGE_SIZE,
-            ),
-        )
+    await callback_query.message.edit_text(
+        build_action_result_text(
+            "Ученик удалён",
+            f"Профиль <b>{name}</b> полностью удалён из базы.",
+            next_step="Если человек снова запустит /start, он пройдёт регистрацию заново.",
+        ),
+        reply_markup=make_back_button_keyboard("◀️ К списку учеников", f"admin:students:page:{page}"),
+    )
     await callback_query.answer()
 
 
@@ -543,14 +1200,34 @@ async def admin_select_student_manage(callback_query: types.CallbackQuery, state
             f"📚 Домашних заданий: <b>{snapshot.get('homework', 0)}</b>\n"
             f"🧭 Calendar-связей: <b>{snapshot.get('calendar_links', 0)}</b>\n\n"
             "После этого ученик сможет зарегистрироваться заново.",
-            reply_markup=make_delete_confirm_keyboard(student_id),
+            reply_markup=make_delete_review_keyboard(student_id),
         )
     else:
         await callback_query.message.edit_text(
             f"🗑 Деактивировать ученика <b>{name}</b>?\n\n"
             "Ученик не сможет пользоваться ботом. История платежей и занятий сохранится.",
-            reply_markup=make_deactivate_confirm_keyboard(student_id),
+            reply_markup=make_deactivate_review_keyboard(student_id),
         )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("deactivate_review:"))
+async def admin_deactivate_student_review(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    student_id = int(callback_query.data.split(":")[1])
+    student = await db.get_user(student_id)
+    name = q(student["full_name"]) if student else str(student_id)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "⚠️ <b>Финальное подтверждение</b>",
+            "",
+            f"Ученик <b>{name}</b> потеряет доступ к боту сразу после этого шага.",
+            "История платежей и занятий сохранится.",
+        ]),
+        reply_markup=make_deactivate_confirm_keyboard(student_id),
+    )
     await callback_query.answer()
 
 
@@ -566,6 +1243,26 @@ async def admin_deactivate_student_confirm(callback_query: types.CallbackQuery, 
     await callback_query.message.edit_text(
         f"✅ Ученик <b>{name}</b> деактивирован.\n\nИстория сохранена.",
         reply_markup=back_to_admin_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("delete_review:"))
+async def admin_delete_student_review(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    student_id = int(callback_query.data.split(":")[1])
+    student = await db.get_user(student_id)
+    name = q(student["full_name"]) if student else str(student_id)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "⚠️ <b>Финальное подтверждение</b>",
+            "",
+            f"Профиль <b>{name}</b> будет удалён вместе с уроками, оплатами и домашними заданиями.",
+            "После этого восстановление из интерфейса невозможно.",
+        ]),
+        reply_markup=make_delete_confirm_keyboard(student_id),
     )
     await callback_query.answer()
 
@@ -650,6 +1347,24 @@ async def admin_add_student_id(message: types.Message, state: FSMContext, db: Da
         await message.answer(
             f"⚠️ Пользователь с ID <code>{telegram_id}</code> уже есть в базе:\n"
             f"<b>{q(existing['full_name'])}</b> ({q(existing['role'])})",
+            reply_markup=back_to_admin_keyboard,
+        )
+        return
+
+    if await db.is_telegram_id_blocked(telegram_id):
+        await state.clear()
+        await message.answer(
+            f"ID <code>{telegram_id}</code> is blocked.\n"
+            "Run <code>/unblock</code> first, then add the profile.",
+            reply_markup=back_to_admin_keyboard,
+        )
+        return
+
+    if await db.is_telegram_id_blocked(telegram_id):
+        await state.clear()
+        await message.answer(
+            f"рџљ« ID <code>{telegram_id}</code> РµСЃС‚СЊ РІ СЃРїРёСЃРєРµ Р±Р»РѕРєРёСЂРѕРІРѕРє.\n"
+            "РЎРЅР°С‡Р°Р»Р° СЃРЅРёРјРёС‚Рµ Р±Р»РѕРє РєРѕРјР°РЅРґРѕР№ <code>/unblock</code>, Р° РїРѕС‚РѕРј РґРѕР±Р°РІР»СЏР№С‚Рµ РїСЂРѕС„РёР»СЊ.",
             reply_markup=back_to_admin_keyboard,
         )
         return

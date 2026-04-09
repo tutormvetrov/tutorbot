@@ -48,6 +48,8 @@ sudo systemctl enable --now tutorbot
 TUTORBOT_ALLOW_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
 ```
 
+- [ ] Перед restore бот остановлен, либо для осознанного live-restore явно указан `TUTORBOT_ALLOW_LIVE_RESTORE=1`.
+
 - [ ] Повторить `make smoke`.
 
 ## Notes

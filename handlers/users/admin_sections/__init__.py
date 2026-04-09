@@ -1,4 +1,4 @@
-from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, notes, payments, students
+from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, notes, parents, payments, students
 
 __all__ = [
     "broadcast",
@@ -6,6 +6,7 @@ __all__ = [
     "health",
     "homework",
     "notes",
+    "parents",
     "payments",
     "students",
 ]

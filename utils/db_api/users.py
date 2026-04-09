@@ -20,6 +20,146 @@ class DatabaseUserMixin:
             telegram_id, fetchrow=True,
         )
 
+    async def get_telegram_block(self, telegram_id: int):
+        return await self.execute(
+            """
+            SELECT
+                b.telegram_id,
+                b.reason,
+                b.blocked_by,
+                b.blocked_at,
+                b.previous_is_active,
+                u.full_name,
+                u.username,
+                u.role,
+                u.is_active
+            FROM blocked_telegram_ids b
+            LEFT JOIN users u
+              ON u.telegram_id = b.telegram_id
+            WHERE b.telegram_id = $1
+            """,
+            telegram_id,
+            fetchrow=True,
+        )
+
+    async def is_telegram_id_blocked(self, telegram_id: int) -> bool:
+        return bool(
+            await self.execute(
+                "SELECT 1 FROM blocked_telegram_ids WHERE telegram_id = $1",
+                telegram_id,
+                fetchval=True,
+            )
+        )
+
+    async def get_blocked_telegram_ids(self, limit: int = 20):
+        return await self.execute(
+            """
+            SELECT
+                b.telegram_id,
+                b.reason,
+                b.blocked_by,
+                b.blocked_at,
+                b.previous_is_active,
+                u.full_name,
+                u.username,
+                u.role,
+                u.is_active
+            FROM blocked_telegram_ids b
+            LEFT JOIN users u
+              ON u.telegram_id = b.telegram_id
+            ORDER BY b.blocked_at DESC, b.telegram_id DESC
+            LIMIT $1
+            """,
+            limit,
+            fetch=True,
+        )
+
+    async def block_telegram_id(
+        self,
+        telegram_id: int,
+        blocked_by: int | None = None,
+        reason: str | None = None,
+    ):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                existing_user = await conn.fetchrow(
+                    """
+                    SELECT telegram_id, is_active
+                    FROM users
+                    WHERE telegram_id = $1
+                    """,
+                    telegram_id,
+                )
+                previous_is_active = None
+                if existing_user is not None:
+                    previous_is_active = existing_user["is_active"]
+
+                await conn.execute(
+                    """
+                    INSERT INTO blocked_telegram_ids (
+                        telegram_id,
+                        reason,
+                        blocked_by,
+                        previous_is_active
+                    )
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET reason = EXCLUDED.reason,
+                        blocked_by = EXCLUDED.blocked_by,
+                        blocked_at = CURRENT_TIMESTAMP,
+                        previous_is_active = COALESCE(
+                            blocked_telegram_ids.previous_is_active,
+                            EXCLUDED.previous_is_active
+                        )
+                    """,
+                    telegram_id,
+                    reason,
+                    blocked_by,
+                    previous_is_active,
+                )
+
+                if existing_user is not None:
+                    await conn.execute(
+                        "UPDATE users SET is_active = false WHERE telegram_id = $1",
+                        telegram_id,
+                    )
+
+        return await self.get_telegram_block(telegram_id)
+
+    async def unblock_telegram_id(self, telegram_id: int) -> dict:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                block_row = await conn.fetchrow(
+                    """
+                    SELECT previous_is_active
+                    FROM blocked_telegram_ids
+                    WHERE telegram_id = $1
+                    """,
+                    telegram_id,
+                )
+                if block_row is None:
+                    return {"removed": False, "reactivated": False}
+
+                await conn.execute(
+                    "DELETE FROM blocked_telegram_ids WHERE telegram_id = $1",
+                    telegram_id,
+                )
+
+                reactivated = False
+                if block_row["previous_is_active"] is True:
+                    result = await conn.execute(
+                        """
+                        UPDATE users
+                        SET is_active = true
+                        WHERE telegram_id = $1
+                          AND role IN ('student', 'parent')
+                        """,
+                        telegram_id,
+                    )
+                    reactivated = not result.endswith("0")
+
+        return {"removed": True, "reactivated": reactivated}
+
     async def get_all_students(self):
         return await self.execute(
             """
@@ -150,6 +290,153 @@ class DatabaseUserMixin:
                 items.append(label)
         return items
 
+    async def get_parent_children_overview(self, parent_id: int):
+        return await self.execute(
+            """
+            SELECT
+                sp.id AS link_id,
+                sp.parent_id,
+                sp.student_id,
+                sp.student_info,
+                COALESCE(u.full_name, sp.student_info) AS child_label,
+                CASE
+                    WHEN sp.student_id IS NULL THEN 'waiting_link'
+                    WHEN u.telegram_id IS NOT NULL AND u.role = 'student' AND u.is_active = true THEN 'linked'
+                    ELSE 'inactive_student'
+                END AS link_status,
+                (
+                    SELECT MIN(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = sp.student_id
+                      AND l.status = 'active'
+                      AND l.lesson_date IS NOT NULL
+                ) AS next_lesson_date,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM homework h
+                    WHERE h.student_id = sp.student_id
+                      AND h.status = 'active'
+                ), 0) AS active_homework_count,
+                COALESCE((
+                    SELECT SUM(p.lessons_remaining)::int
+                    FROM payments p
+                    WHERE p.student_id = sp.student_id
+                      AND p.status = 'confirmed'
+                ), 0) AS lesson_balance,
+                COALESCE(u.lesson_format, 'online') AS lesson_format
+            FROM student_parent sp
+            LEFT JOIN users u
+              ON u.telegram_id = sp.student_id
+            WHERE sp.parent_id = $1
+              AND sp.is_active = true
+            ORDER BY sp.id
+            """,
+            parent_id,
+            fetch=True,
+        )
+
+    async def get_parent_child_link(self, parent_id: int, link_id: int):
+        return await self.execute(
+            """
+            SELECT
+                sp.id AS link_id,
+                sp.parent_id,
+                sp.student_id,
+                sp.student_info,
+                COALESCE(u.full_name, sp.student_info) AS child_label,
+                CASE
+                    WHEN sp.student_id IS NULL THEN 'waiting_link'
+                    WHEN u.telegram_id IS NOT NULL AND u.role = 'student' AND u.is_active = true THEN 'linked'
+                    ELSE 'inactive_student'
+                END AS link_status,
+                (
+                    SELECT MIN(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = sp.student_id
+                      AND l.status = 'active'
+                      AND l.lesson_date IS NOT NULL
+                ) AS next_lesson_date,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM homework h
+                    WHERE h.student_id = sp.student_id
+                      AND h.status = 'active'
+                ), 0) AS active_homework_count,
+                COALESCE((
+                    SELECT SUM(p.lessons_remaining)::int
+                    FROM payments p
+                    WHERE p.student_id = sp.student_id
+                      AND p.status = 'confirmed'
+                ), 0) AS lesson_balance,
+                COALESCE(u.lesson_format, 'online') AS lesson_format
+            FROM student_parent sp
+            LEFT JOIN users u
+              ON u.telegram_id = sp.student_id
+            WHERE sp.parent_id = $1
+              AND sp.id = $2
+              AND sp.is_active = true
+            """,
+            parent_id,
+            link_id,
+            fetchrow=True,
+        )
+
+    async def get_parent_child_schedule(self, parent_id: int, link_id: int):
+        return await self.execute(
+            """
+            SELECT l.*
+            FROM lessons l
+            JOIN student_parent sp
+              ON sp.student_id = l.student_id
+             AND sp.parent_id = $1
+             AND sp.id = $2
+             AND sp.is_active = true
+            WHERE l.status = 'active'
+            ORDER BY l.lesson_date ASC NULLS LAST, l.created_at DESC
+            """,
+            parent_id,
+            link_id,
+            fetch=True,
+        )
+
+    async def get_parent_child_homework(self, parent_id: int, link_id: int, status: str = "active"):
+        return await self.execute(
+            """
+            SELECT h.*
+            FROM homework h
+            JOIN student_parent sp
+              ON sp.student_id = h.student_id
+             AND sp.parent_id = $1
+             AND sp.id = $2
+             AND sp.is_active = true
+            WHERE h.status = $3
+            ORDER BY h.deadline ASC NULLS LAST, h.created_at DESC
+            """,
+            parent_id,
+            link_id,
+            status,
+            fetch=True,
+        )
+
+    async def get_parent_child_payments(self, parent_id: int, link_id: int, limit: int = 5):
+        return await self.execute(
+            """
+            SELECT p.*
+            FROM payments p
+            JOIN student_parent sp
+              ON sp.student_id = p.student_id
+             AND sp.parent_id = $1
+             AND sp.id = $2
+             AND sp.is_active = true
+            ORDER BY p.created_at DESC
+            LIMIT $3
+            """,
+            parent_id,
+            link_id,
+            limit,
+            fetch=True,
+        )
+
     async def get_students_overview(self):
         return await self.execute(
             """
@@ -187,6 +474,89 @@ class DatabaseUserMixin:
             """,
             fetch=True,
         )
+
+    async def get_parents_overview(self):
+        return await self.execute(
+            """
+            SELECT
+                u.telegram_id,
+                u.full_name,
+                u.username,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM student_parent sp
+                    WHERE sp.parent_id = u.telegram_id
+                      AND sp.is_active = true
+                ), 0) AS children_count,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM student_parent sp
+                    WHERE sp.parent_id = u.telegram_id
+                      AND sp.is_active = true
+                      AND sp.student_id IS NOT NULL
+                ), 0) AS linked_children_count
+            FROM users u
+            WHERE u.role = 'parent'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+            ORDER BY u.full_name
+            """,
+            fetch=True,
+        )
+
+    async def deactivate_parent(self, telegram_id: int):
+        await self.execute(
+            """
+            UPDATE users
+            SET is_active = false
+            WHERE telegram_id = $1
+              AND role = 'parent'
+            """,
+            telegram_id,
+            execute=True,
+        )
+
+    async def get_parent_deletion_snapshot(self, telegram_id: int) -> dict:
+        user = await self.get_user(telegram_id)
+        if not user or user.get("role") != "parent":
+            return {}
+
+        children_count = await self.execute(
+            """
+            SELECT COUNT(*)::int
+            FROM student_parent
+            WHERE parent_id = $1
+              AND is_active = true
+            """,
+            telegram_id,
+            fetchval=True,
+        ) or 0
+        linked_children_count = await self.execute(
+            """
+            SELECT COUNT(*)::int
+            FROM student_parent
+            WHERE parent_id = $1
+              AND is_active = true
+              AND student_id IS NOT NULL
+            """,
+            telegram_id,
+            fetchval=True,
+        ) or 0
+        payments_as_payer = await self.execute(
+            """
+            SELECT COUNT(*)::int
+            FROM payments
+            WHERE payer_id = $1
+            """,
+            telegram_id,
+            fetchval=True,
+        ) or 0
+
+        return {
+            "children_count": children_count,
+            "linked_children_count": linked_children_count,
+            "payments_as_payer": payments_as_payer,
+        }
 
     async def get_students_with_calendar_alias_counts(self):
         return await self.execute(
@@ -273,6 +643,22 @@ class DatabaseUserMixin:
                     "DELETE FROM users WHERE telegram_id = $1", telegram_id
                 )
 
+    async def delete_parent_preserving_history(self, telegram_id: int):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE payments SET payer_id = NULL WHERE payer_id = $1",
+                    telegram_id,
+                )
+                await conn.execute(
+                    "DELETE FROM student_parent WHERE parent_id = $1",
+                    telegram_id,
+                )
+                await conn.execute(
+                    "DELETE FROM users WHERE telegram_id = $1 AND role = 'parent'",
+                    telegram_id,
+                )
+
     async def get_students_for_review(self):
         return await self.execute(
             """
@@ -325,6 +711,37 @@ class DatabaseUserMixin:
         await self.execute(
             "UPDATE users SET speech_style = $1 WHERE telegram_id = $2",
             value,
+            telegram_id,
+            execute=True,
+        )
+
+    async def set_lesson_duration(self, telegram_id: int, minutes: int):
+        await self.execute(
+            "UPDATE users SET lesson_duration_minutes = $1 WHERE telegram_id = $2",
+            minutes,
+            telegram_id,
+            execute=True,
+        )
+
+    async def save_student_bookmark(
+        self,
+        telegram_id: int,
+        lesson_id: int,
+        bookmark_text: str | None,
+        bookmark_state: str,
+    ):
+        await self.execute(
+            """
+            UPDATE users
+            SET current_bookmark_text = $1,
+                current_bookmark_state = $2,
+                current_bookmark_updated_at = CURRENT_TIMESTAMP,
+                current_bookmark_lesson_id = $3
+            WHERE telegram_id = $4
+            """,
+            bookmark_text,
+            bookmark_state,
+            lesson_id,
             telegram_id,
             execute=True,
         )
@@ -428,6 +845,14 @@ class DatabaseUserMixin:
                     WHERE p.student_id = student.telegram_id
                       AND p.status = 'confirmed'
                 ), 0) AS lesson_balance
+                ,
+                (
+                    SELECT MIN(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = student.telegram_id
+                      AND l.status = 'active'
+                      AND l.lesson_date IS NOT NULL
+                ) AS next_lesson_date
             FROM student_parent sp
             JOIN users parent
               ON parent.telegram_id = sp.parent_id

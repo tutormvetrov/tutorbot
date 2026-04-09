@@ -2,24 +2,22 @@ import json
 import os
 from pathlib import Path
 from typing import cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-INTERNAL_TEST_ACCOUNT_RULES = [
-    {
-        "telegram_ids": {389264815},
-        "usernames": {"eliza_znkv"},
-        "surname": "занкевич",
-        "names": {"лиза", "елизавета", "eliza"},
-    },
-]
+INTERNAL_TEST_ACCOUNT_RULES = []
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_TOKEN = str(os.getenv("BOT_TOKEN", "")).strip()
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+ADMIN_ID_RAW = str(os.getenv("ADMIN_ID", "")).strip()
+try:
+    ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
+except ValueError:
+    ADMIN_ID = 0
 
 PGUSER = str(os.getenv("PGUSER", "")).strip()
 PGPASSWORD = str(os.getenv("PGPASSWORD", "")).strip()
@@ -28,6 +26,15 @@ PGHOST = str(os.getenv("PGHOST", "")).strip()
 PGPORT = str(os.getenv("PGPORT", "")).strip()
 
 POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}"
+
+TUTORBOT_TIMEZONE = str(os.getenv("TUTORBOT_TIMEZONE", "Europe/Moscow")).strip() or "Europe/Moscow"
+try:
+    BUSINESS_TIMEZONE = ZoneInfo(TUTORBOT_TIMEZONE)
+    BUSINESS_TIMEZONE_ERROR = ""
+except ZoneInfoNotFoundError:
+    BUSINESS_TIMEZONE = ZoneInfo("Europe/Moscow")
+    BUSINESS_TIMEZONE_ERROR = f"Unknown time zone: {TUTORBOT_TIMEZONE}"
+BUSINESS_TIMEZONE_LABEL = "МСК" if TUTORBOT_TIMEZONE == "Europe/Moscow" else TUTORBOT_TIMEZONE
 
 GOOGLE_CALENDAR_ID = str(os.getenv("GOOGLE_CALENDAR_ID", "")).strip()
 GOOGLE_CREDENTIALS_FILE = os.getenv(

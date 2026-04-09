@@ -18,16 +18,16 @@ class ConfigHelpersTest(unittest.TestCase):
             "елизавета занкевич",
         )
 
-    def test_internal_account_detects_known_test_user(self):
-        self.assertTrue(
+    def test_internal_account_does_not_mark_regular_student(self):
+        self.assertFalse(
             is_internal_test_account(
                 full_name="Елизавета Занкевич",
                 username="eliza_znkv",
             )
         )
 
-    def test_internal_account_detects_by_telegram_id(self):
-        self.assertTrue(
+    def test_internal_account_does_not_mark_by_telegram_id(self):
+        self.assertFalse(
             is_internal_test_account(
                 full_name="Любой Пользователь",
                 telegram_id=389264815,

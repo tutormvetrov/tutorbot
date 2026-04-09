@@ -1,7 +1,13 @@
-BOOTSTRAP_PYTHON ?= python3
 DEV_VENV ?= .venv-dev
-PYTHON ?= $(DEV_VENV)/bin/python
-PIP := $(DEV_VENV)/bin/python -m pip
+ifeq ($(OS),Windows_NT)
+BOOTSTRAP_PYTHON ?= py -3
+DEV_PYTHON := $(DEV_VENV)/Scripts/python.exe
+else
+BOOTSTRAP_PYTHON ?= python3
+DEV_PYTHON := $(DEV_VENV)/bin/python
+endif
+PYTHON ?= $(DEV_PYTHON)
+PIP := $(PYTHON) -m pip
 RUFF := $(PYTHON) -m ruff
 MYPY := $(PYTHON) -m mypy
 PYTEST := $(PYTHON) -m pytest
@@ -15,7 +21,7 @@ install-dev:
 	$(PIP) install -r requirements.txt -r requirements-dev.txt
 
 validate-env:
-	$(PYTHON) scripts/validate_env.py
+	$(PYTHON) scripts/validate_env.py --mode local
 
 lint:
 	$(RUFF) check .
@@ -32,13 +38,13 @@ compile:
 check: validate-env lint typecheck test compile
 
 healthcheck:
-	TUTORBOT_ROOT=$(CURDIR) ./scripts/healthcheck.sh
+	TUTORBOT_ROOT=$(CURDIR) $(PYTHON) scripts/healthcheck.py --mode local
 
 smoke:
-	TUTORBOT_ROOT=$(CURDIR) ./scripts/release_smoke.sh
+	TUTORBOT_ROOT=$(CURDIR) $(PYTHON) scripts/release_smoke.py --mode local
 
 backup:
-	TUTORBOT_ROOT=$(CURDIR) ./scripts/db_backup.sh
+	TUTORBOT_ROOT=$(CURDIR) $(PYTHON) scripts/db_backup.py
 
 restore:
-	@echo "Use: TUTORBOT_ROOT=$(CURDIR) TUTORBOT_ALLOW_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz"
+	@echo "Use: TUTORBOT_ROOT=$(CURDIR) TUTORBOT_ALLOW_RESTORE=1 $(PYTHON) scripts/db_restore.py /path/to/backup.sql.gz"

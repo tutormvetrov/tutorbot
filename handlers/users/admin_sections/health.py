@@ -2,9 +2,10 @@ from datetime import datetime
 
 from aiogram import Router, html, types
 from aiogram.filters import StateFilter
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from data import config
-from keyboards.inline import make_back_button_keyboard
+from utils.brand import brand_tone_label, get_brand_tone
 from utils.db_api.postgresql import Database
 from utils.google_calendar import load_last_sync_report
 from utils.observability import load_ops_status, load_recent_runtime_events
@@ -57,6 +58,32 @@ def _format_job_line(label: str, job: dict | None, metric_keys: tuple[str, ...] 
     return " ".join(fragments)
 
 
+def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+
+def _service_navigation_keyboard(active_view: str) -> InlineKeyboardMarkup:
+    monitor_label = "• Мониторинг" if active_view == "monitoring" else "Мониторинг"
+    context_label = "• Контекст и проект" if active_view == "context" else "Контекст и проект"
+    rows = [
+        [_btn(monitor_label, "admin:service:monitoring"), _btn(context_label, "admin:service:context")],
+    ]
+
+    if active_view == "monitoring":
+        rows.append([
+            _btn("🔄 Синхронизировать Calendar", "admin:sync:monitoring"),
+            _btn("📋 Отчёт синхронизации", "admin:calendar_report"),
+        ])
+    else:
+        rows.append([
+            _btn(f"🎨 Тональность: {brand_tone_label(get_brand_tone())}", "admin:brand_tone"),
+            _btn("📝 Сообщения для отладки", "admin:notes"),
+        ])
+
+    rows.append([_btn("◀️ К сервису", "admin:cat:service")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _format_health_text(student_count: int, report: dict, ops_status: dict, runtime_events: list[dict]) -> str:
     status = ops_status.get("status", "unknown")
     scheduler = ops_status.get("scheduler", "unknown")
@@ -78,6 +105,8 @@ def _format_health_text(student_count: int, report: dict, ops_status: dict, runt
         "",
         "🔔 <b>Планировщик напоминаний</b>",
         _format_job_line("Уроки", jobs.get("lesson_reminder"), ("sent", "checked")),
+        _format_job_line("Фоллоу-ап после урока", jobs.get("teacher_lesson_followup"), ("sent", "checked")),
+        _format_job_line("Закладки перед уроком", jobs.get("teacher_bookmark_reminder"), ("sent", "checked")),
         _format_job_line("Домашка", jobs.get("homework_reminder"), ("sent",)),
         _format_job_line("Оплата (утро)", jobs.get("payment_reminder_morning"), ("unpaid", "paid")),
         _format_job_line("Оплата (вечер)", jobs.get("payment_reminder_evening"), ("unpaid", "paid")),
@@ -97,20 +126,65 @@ def _format_health_text(student_count: int, report: dict, ops_status: dict, runt
     return "\n".join(lines)
 
 
-@router.callback_query(lambda c: c.data == 'admin:health', StateFilter('*'))
-async def admin_health(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
-        await callback_query.answer()
-        return
+def _format_service_context_text(ops_status: dict, runtime_events: list[dict]) -> str:
+    scheduler = ops_status.get("scheduler", "unknown")
+    errors = [event for event in runtime_events if event.get("status") == "error"]
+    tone = brand_tone_label(get_brand_tone())
 
+    lines = [
+        "🧭 <b>Контекст и проект</b>",
+        "",
+        f"🎨 Тональность бренда: <b>{html.quote(tone)}</b>",
+        f"⏱ Scheduler: <b>{html.quote(str(scheduler))}</b>",
+        "",
+        "Здесь удобно держать рабочие настройки и отладочный контекст в одном месте.",
+        "Тональность меняется отдельной кнопкой, а рабочие сообщения для отладки находятся в этом же сервисном разделе.",
+    ]
+    if errors:
+        lines.extend([
+            "",
+            f"⚠️ Последних runtime-ошибок: <b>{len(errors)}</b>",
+        ])
+    return "\n".join(lines)
+
+
+async def _render_monitoring_screen(callback_query: types.CallbackQuery, db: Database):
     students = await db.get_all_students()
     report = load_last_sync_report()
     ops_status = load_ops_status()
     runtime_events = load_recent_runtime_events(limit=30)
 
-    text = _format_health_text(len(students), report, ops_status, runtime_events)
     await callback_query.message.edit_text(
-        text,
-        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
+        _format_health_text(len(students), report, ops_status, runtime_events),
+        reply_markup=_service_navigation_keyboard("monitoring"),
     )
+
+
+async def _render_context_screen(callback_query: types.CallbackQuery, db: Database):
+    ops_status = load_ops_status()
+    runtime_events = load_recent_runtime_events(limit=30)
+
+    await callback_query.message.edit_text(
+        _format_service_context_text(ops_status, runtime_events),
+        reply_markup=_service_navigation_keyboard("context"),
+    )
+
+
+@router.callback_query(lambda c: c.data in {'admin:health', 'admin:service:monitoring'}, StateFilter('*'))
+async def admin_health(callback_query: types.CallbackQuery, db: Database):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    await _render_monitoring_screen(callback_query, db)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == 'admin:service:context', StateFilter('*'))
+async def admin_service_context(callback_query: types.CallbackQuery, db: Database):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    await _render_context_screen(callback_query, db)
     await callback_query.answer()

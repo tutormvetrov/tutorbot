@@ -7,6 +7,8 @@ class Registration(StatesGroup):
     waiting_for_age = State()
     waiting_for_language = State()
     waiting_for_level = State()
+    waiting_for_child_name = State()
+    waiting_for_child_age = State()
     waiting_for_student_info = State()
 
 
@@ -40,8 +42,23 @@ class AdminManageStudent(StatesGroup):
     waiting_for_student = State()
 
 
+class AdminStudentsDirectory(StatesGroup):
+    browsing = State()
+    waiting_for_search = State()
+
+
+class AdminParentsDirectory(StatesGroup):
+    browsing = State()
+    waiting_for_search = State()
+
+
 class AdminAddHomework(StatesGroup):
     waiting_for_student = State()
+    waiting_for_description = State()
+    waiting_for_deadline = State()
+
+
+class AdminEditHomework(StatesGroup):
     waiting_for_description = State()
     waiting_for_deadline = State()
 
@@ -56,6 +73,12 @@ class AdminManageLessons(StatesGroup):
 
 class AdminWriteToStudent(StatesGroup):
     waiting_for_message = State()
+
+
+class AdminLessonFollowup(StatesGroup):
+    waiting_for_lesson_comment = State()
+    waiting_for_lesson_bookmark = State()
+    waiting_for_lesson_duration = State()
 
 
 class StudentReply(StatesGroup):

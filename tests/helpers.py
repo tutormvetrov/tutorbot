@@ -23,12 +23,23 @@ class DummyState:
 class DummyBot:
     def __init__(self):
         self.sent_messages = []
+        self.sent_documents = []
         self.edited_messages = []
         self.copied_messages = []
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent_messages.append(
             SimpleNamespace(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        )
+
+    async def send_document(self, chat_id, document, caption=None, reply_markup=None):
+        self.sent_documents.append(
+            SimpleNamespace(
+                chat_id=chat_id,
+                document=document,
+                caption=caption,
+                reply_markup=reply_markup,
+            )
         )
 
     async def copy_message(self, chat_id, from_chat_id, message_id, reply_markup=None):
@@ -75,6 +86,7 @@ class DummyMessage:
         self.entities = None
         self.caption_entities = None
         self.html_text = text or caption or ""
+        self.html_caption = caption or ""
         self.from_user = SimpleNamespace(id=user_id, full_name=full_name, username=username)
         self.bot = bot or DummyBot()
         self.chat = SimpleNamespace(id=chat_id or user_id)

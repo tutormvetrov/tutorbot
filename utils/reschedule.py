@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, time
 
 from data.config import load_teacher_info
+from utils.time import business_naive_now
 
 
 DEFAULT_RESCHEDULE_CONFIG = {
@@ -62,7 +63,7 @@ def _round_up(value: datetime, step_minutes: int) -> datetime:
 
 async def find_next_free_reschedule_slots(db, now: datetime | None = None) -> list[datetime]:
     config = load_reschedule_config()
-    now = now or datetime.now()
+    now = now or business_naive_now()
     search_from = _round_up(now + timedelta(hours=config["min_lead_hours"]), config["slot_step_minutes"])
     search_until = search_from + timedelta(days=config["window_days"])
     duration = timedelta(minutes=config["lesson_duration_minutes"])

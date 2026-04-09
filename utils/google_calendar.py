@@ -15,10 +15,10 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING, cast
 
 from data import config
+from utils.time import utc_now
 
 if TYPE_CHECKING:
     from utils.db_api.postgresql import Database
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SYNC_REPORT_FILE = PROJECT_ROOT / "data" / "calendar_sync_report.json"
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+BUSINESS_TZ = config.BUSINESS_TIMEZONE
 LESSON_TITLE_MARKERS = (
     "урок с ",
     "урок со ",
@@ -60,7 +60,7 @@ def _build_service():
     return build("calendar", "v3", credentials=credentials, cache_discovery=False)
 
 
-def _fetch_events(days_ahead: int = 60) -> list[dict]:
+def _fetch_events(days_ahead: int = 60) -> tuple[list[dict], int]:
     """Fetch upcoming events from Google Calendar (synchronous)."""
     service = _build_service()
     calendar_id = config.GOOGLE_CALENDAR_ID
@@ -70,17 +70,31 @@ def _fetch_events(days_ahead: int = 60) -> list[dict]:
             "Укажите ID вашего календаря."
         )
 
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     time_max = now + timedelta(days=days_ahead)
-    result = service.events().list(
-        calendarId=calendar_id,
-        timeMin=now.isoformat(),
-        timeMax=time_max.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=2500,
-    ).execute()
-    return result.get("items", [])
+    events: list[dict] = []
+    page_token: str | None = None
+    pages_fetched = 0
+
+    while True:
+        request = {
+            "calendarId": calendar_id,
+            "timeMin": now.isoformat(),
+            "timeMax": time_max.isoformat(),
+            "singleEvents": True,
+            "orderBy": "startTime",
+            "maxResults": 2500,
+        }
+        if page_token:
+            request["pageToken"] = page_token
+        result = service.events().list(**request).execute()
+        pages_fetched += 1
+        events.extend(result.get("items", []))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+
+    return events, pages_fetched
 
 
 def _delete_event(event_id: str) -> str:
@@ -159,7 +173,7 @@ def _parse_event_start(event: dict) -> tuple[datetime | None, str | None]:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
 
-    return value.astimezone(MOSCOW_TZ).replace(tzinfo=None), None
+    return value.astimezone(BUSINESS_TZ).replace(tzinfo=None), None
 
 
 def _event_start_label(event: dict) -> str:
@@ -282,14 +296,31 @@ def _token_variants(token: str) -> set[str]:
     return variants
 
 
+def _tokens_share_name_root(left: str, right: str) -> bool:
+    left_variants = _token_variants(left)
+    right_variants = _token_variants(right)
+    if not left_variants or not right_variants:
+        return False
+    if left_variants & right_variants:
+        return True
+
+    for left_variant in left_variants:
+        for right_variant in right_variants:
+            shorter, longer = sorted((left_variant, right_variant), key=len)
+            if len(shorter) >= 4 and longer.startswith(shorter):
+                return True
+            if len(shorter) >= 5 and shorter[:-1] and longer.startswith(shorter[:-1]):
+                return True
+    return False
+
+
 def _match_student_from_title(event: dict, students: list[dict]) -> tuple[int | None, str]:
     phrase = _extract_lesson_subject_phrase(event)
     if not phrase:
         return None, "no_title_person"
 
     phrase_tokens = [token for token in phrase.split() if token]
-    phrase_variants = [_token_variants(token) for token in phrase_tokens if _token_variants(token)]
-    if len(phrase_variants) < 2:
+    if len(phrase_tokens) < 2:
         return None, "title_person_too_short"
 
     matched_ids = set()
@@ -300,8 +331,7 @@ def _match_student_from_title(event: dict, students: list[dict]) -> tuple[int | 
 
         matched_parts = 0
         for part in parts:
-            student_variants = _token_variants(part)
-            if student_variants and any(student_variants & phrase_token_variants for phrase_token_variants in phrase_variants):
+            if any(_tokens_share_name_root(part, phrase_token) for phrase_token in phrase_tokens):
                 matched_parts += 1
 
         if matched_parts >= 2:
@@ -376,6 +406,7 @@ def format_sync_report_html(report: dict, max_skipped: int = 10) -> str:
         "📋 <b>Отчёт синхронизации Calendar</b>",
         "",
         f"🕒 Время: <b>{report.get('synced_at_local', '—')}</b>",
+        f"📄 Страниц API: <b>{report.get('pages_fetched', 0)}</b>",
         f"📥 Событий из календаря: <b>{report.get('events_fetched', 0)}</b>",
         f"➕ Импортировано: <b>{report.get('imported', 0)}</b>",
         f"♻️ Обновлено: <b>{report.get('updated', 0)}</b>",
@@ -425,27 +456,19 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
     2. Active entries from `calendar_student_links`.
     """
     loop = asyncio.get_event_loop()
-    events = await loop.run_in_executor(None, lambda: _fetch_events(days_ahead))
+    events, pages_fetched = await loop.run_in_executor(None, lambda: _fetch_events(days_ahead))
 
     students = await db.get_all_students()
     students_by_id = {student["telegram_id"]: student for student in students}
     links = await db.get_calendar_student_links()
     compiled_links, warnings = _build_link_matchers(links)
 
-    report = {
-        "synced_at": datetime.now(timezone.utc).isoformat(),
-        "synced_at_local": datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S МСК"),
-        "window_days": days_ahead,
-        "events_fetched": len(events),
-        "imported": 0,
-        "updated": 0,
-        "deleted": 0,
-        "skipped": 0,
-        "warnings": warnings,
-        "skipped_items": [],
-        "missing_student_candidates": [],
-    }
-    missing_candidates: dict[str, dict] = {}
+    imported = 0
+    updated = 0
+    deleted = 0
+    skipped = 0
+    skipped_items: list[dict[str, object]] = []
+    missing_candidates: dict[str, dict[str, object]] = {}
 
     calendar_event_ids = set()
 
@@ -453,8 +476,8 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
         google_event_id = event.get("id")
         summary = _event_summary(event) or "Без названия"
         if not google_event_id:
-            report["skipped"] += 1
-            report["skipped_items"].append(
+            skipped += 1
+            skipped_items.append(
                 {"start": _event_start_label(event), "summary": summary, "reason": "missing_event_id"}
             )
             continue
@@ -463,8 +486,8 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
 
         is_lesson_candidate, candidate_reason = _is_lesson_candidate(event)
         if not is_lesson_candidate:
-            report["skipped"] += 1
-            report["skipped_items"].append(
+            skipped += 1
+            skipped_items.append(
                 {"start": _event_start_label(event), "summary": summary, "reason": candidate_reason}
             )
             continue
@@ -483,11 +506,12 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
                         "examples": [],
                     },
                 )
-                item["count"] += 1
-                if len(item["examples"]) < 3:
-                    item["examples"].append(summary)
-            report["skipped"] += 1
-            report["skipped_items"].append(
+                item["count"] = cast(int, item.get("count", 0)) + 1
+                examples = item.setdefault("examples", [])
+                if isinstance(examples, list) and len(examples) < 3:
+                    examples.append(summary)
+            skipped += 1
+            skipped_items.append(
                 {
                     "start": _event_start_label(event),
                     "summary": summary,
@@ -499,8 +523,8 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
 
         lesson_date, start_reason = _parse_event_start(event)
         if not lesson_date:
-            report["skipped"] += 1
-            report["skipped_items"].append(
+            skipped += 1
+            skipped_items.append(
                 {"start": _event_start_label(event), "summary": summary, "reason": start_reason}
             )
             continue
@@ -508,26 +532,46 @@ async def sync_calendar_to_db(db: "Database", days_ahead: int = 60) -> dict:
         try:
             result = await db.upsert_lesson_from_calendar(student_id, google_event_id, lesson_date)
             if result == "inserted":
-                report["imported"] += 1
+                imported += 1
             else:
-                report["updated"] += 1
+                updated += 1
         except Exception as exc:
             logger.warning(f"Не удалось сохранить событие {google_event_id}: {exc}")
-            report["skipped"] += 1
-            report["skipped_items"].append(
+            skipped += 1
+            skipped_items.append(
                 {"start": _event_start_label(event), "summary": summary, "reason": "db_error"}
             )
 
-    db_event_ids = set(await db.get_google_event_ids_in_window(days_ahead))
-    orphaned = db_event_ids - calendar_event_ids
-    if orphaned:
-        await db.delete_lessons_by_event_ids(list(orphaned))
-        report["deleted"] = len(orphaned)
+    fetch_complete = True
+    if fetch_complete:
+        db_event_ids = set(await db.get_google_event_ids_in_window(days_ahead))
+        orphaned = db_event_ids - calendar_event_ids
+        if orphaned:
+            await db.delete_lessons_by_event_ids(list(orphaned))
+            deleted = len(orphaned)
 
-    report["missing_student_candidates"] = sorted(
+    missing_student_candidates = sorted(
         missing_candidates.values(),
-        key=lambda item: (-item["count"], item["student_hint"]),
+        key=lambda item: (-cast(int, item["count"]), str(item["student_hint"])),
     )
+
+    report = {
+        "synced_at": utc_now().isoformat(),
+        "synced_at_local": datetime.now(BUSINESS_TZ).strftime(
+            f"%d.%m.%Y %H:%M:%S {config.BUSINESS_TIMEZONE_LABEL}"
+        ),
+        "window_days": days_ahead,
+        "pages_fetched": pages_fetched,
+        "fetch_complete": fetch_complete,
+        "events_fetched": len(events),
+        "imported": imported,
+        "updated": updated,
+        "deleted": deleted,
+        "skipped": skipped,
+        "warnings": warnings,
+        "skipped_items": skipped_items,
+        "missing_student_candidates": missing_student_candidates,
+    }
 
     _save_sync_report(report)
     logger.info(

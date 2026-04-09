@@ -36,6 +36,35 @@ class RuntimeConfigValidationTest(unittest.TestCase):
                 issues = config_validation.collect_runtime_config_issues()
         self.assertEqual(issues, [])
 
+    def test_collect_runtime_config_issues_local_mode_skips_missing_runtime_paths(self):
+        with patch.multiple(
+            config,
+            BOT_TOKEN="123456:token",
+            ADMIN_ID=1,
+            PGUSER="postgres",
+            PGPASSWORD="secret",
+            DATABASE="tutorbot",
+            PGHOST="localhost",
+            PGPORT="5432",
+            GOOGLE_CALENDAR_ID="calendar@example.com",
+            GOOGLE_CREDENTIALS_FILE="/home/deploy/.secrets/tutorbot/credentials.json",
+            TUTORBOT_ROOT=ROOT / "missing-runtime-root",
+            TUTORBOT_SERVICE_NAME="tutorbot",
+            TUTORBOT_SYSTEMD_SCOPE="system",
+            TUTORBOT_BACKUP_DIR=ROOT / "missing-runtime-root" / "backups",
+        ):
+            with patch.dict(
+                os.environ,
+                {
+                    "GOOGLE_CALENDAR_ID": "calendar@example.com",
+                    "GOOGLE_CREDENTIALS_FILE": "/home/deploy/.secrets/tutorbot/credentials.json",
+                },
+                clear=False,
+            ):
+                issues = config_validation.collect_runtime_config_issues(mode="local")
+
+        self.assertEqual(issues, [])
+
     def test_collect_runtime_config_issues_rejects_placeholder_google_calendar(self):
         with patch.multiple(
             config,
@@ -61,7 +90,7 @@ class RuntimeConfigValidationTest(unittest.TestCase):
                 },
                 clear=False,
             ):
-                issues = config_validation.collect_runtime_config_issues()
+                issues = config_validation.collect_runtime_config_issues(mode="runtime")
 
         self.assertTrue(any("placeholder" in issue for issue in issues))
         self.assertTrue(any("does not exist" in issue for issue in issues))
@@ -91,6 +120,30 @@ class RuntimeConfigValidationTest(unittest.TestCase):
         self.assertIn("BOT_TOKEN", text)
         self.assertIn("PGPORT", text)
         self.assertIn("TUTORBOT_SYSTEMD_SCOPE", text)
+
+    def test_collect_runtime_config_issues_reports_invalid_admin_id_and_timezone(self):
+        with patch.multiple(
+            config,
+            BOT_TOKEN="123456:token",
+            ADMIN_ID=0,
+            ADMIN_ID_RAW="abc",
+            PGUSER="postgres",
+            PGPASSWORD="secret",
+            DATABASE="tutorbot",
+            PGHOST="localhost",
+            PGPORT="5432",
+            GOOGLE_CALENDAR_ID="",
+            GOOGLE_CREDENTIALS_FILE="",
+            BUSINESS_TIMEZONE_ERROR="Unknown time zone: Mars/Phobos",
+            TUTORBOT_ROOT=ROOT,
+            TUTORBOT_SERVICE_NAME="tutorbot",
+            TUTORBOT_SYSTEMD_SCOPE="system",
+            TUTORBOT_BACKUP_DIR=ROOT / "backups",
+        ):
+            issues = config_validation.collect_runtime_config_issues()
+
+        self.assertTrue(any("ADMIN_ID must be an integer." == issue for issue in issues))
+        self.assertTrue(any("TUTORBOT_TIMEZONE is invalid" in issue for issue in issues))
 
 
 if __name__ == "__main__":

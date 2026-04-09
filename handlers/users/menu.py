@@ -4,18 +4,20 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from keyboards.inline import main_keyboard, back_to_menu_keyboard, profile_keyboard, parent_profile_keyboard
+from keyboards.inline import back_to_menu_keyboard
+from handlers.users.screens import get_profile_payload, get_user_home_payload
 from utils.db_api.postgresql import Database
-from utils.ui_text import MAIN_MENU_TEXT, build_help_text, build_profile_text
+from utils.ui_text import build_help_text
 
 router = Router()
 logger = logging.getLogger(__name__)
 
 
 @router.message(Command("menu"))
-async def command_menu(message: Message):
+async def command_menu(message: Message, db: Database):
     logger.info(f"Команда /menu от {message.from_user.id}")
-    await message.answer(MAIN_MENU_TEXT, reply_markup=main_keyboard)
+    text, keyboard = await get_user_home_payload(db, message.from_user.id)
+    await message.answer(text, reply_markup=keyboard)
 
 
 @router.message(Command("help"))
@@ -27,33 +29,5 @@ async def command_help(message: Message):
 @router.message(Command("profile"))
 async def command_profile(message: Message, db: Database):
     logger.info(f"Команда /profile от {message.from_user.id}")
-    user = await db.get_user(message.from_user.id)
-
-    if not user:
-        await message.answer(
-            "⚠️ Вы не зарегистрированы. Используйте /start.",
-            reply_markup=back_to_menu_keyboard,
-        )
-        return
-
-    balance = await db.get_student_lesson_balance(message.from_user.id)
-    next_lessons = await db.get_active_lessons(message.from_user.id) if user["role"] == "student" else []
-    next_lesson = next_lessons[0]["lesson_date"] if next_lessons and next_lessons[0].get("lesson_date") else None
-    children = None
-    if user["role"] == "parent":
-        children = await db.get_parent_children(message.from_user.id)
-    text = build_profile_text(
-        user,
-        balance,
-        next_lesson=next_lesson,
-        reminders=user.get("lesson_reminders"),
-        children=children,
-    )
-
-    if user["role"] == "student":
-        kb = profile_keyboard
-    elif user["role"] == "parent":
-        kb = parent_profile_keyboard
-    else:
-        kb = back_to_menu_keyboard
-    await message.answer(text, reply_markup=kb)
+    text, keyboard = await get_profile_payload(db, message.from_user.id)
+    await message.answer(text, reply_markup=keyboard or back_to_menu_keyboard)

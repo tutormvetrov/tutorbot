@@ -10,7 +10,13 @@ if str(ROOT) not in sys.path:
 
 
 from data import config
-from handlers.users.callbacks import process_freeze_confirm, process_freeze_reason, process_profile_delete_me, process_self_delete_confirm
+from handlers.users.callbacks import (
+    process_freeze_confirm,
+    process_freeze_reason,
+    process_profile_delete_me,
+    process_self_delete_confirm,
+    process_self_delete_review,
+)
 from handlers.users.admin_sections.broadcast import (
     admin_broadcast_back_preview,
     admin_broadcast_confirm_text,
@@ -155,7 +161,19 @@ class SelfDeletePremiumPassTest(unittest.IsolatedAsyncioTestCase):
 
                 self.assertIn(title_snippet, message.edits[-1])
                 self.assertIn(body_snippet, message.edits[-1])
-                self.assertEqual(_keyboard_texts(message.reply_markups[-1]), ["🗑 Да, удалить профиль", "◀️ Назад в профиль"])
+                self.assertEqual(_keyboard_texts(message.reply_markups[-1]), ["⚠️ Я понимаю последствия", "◀️ Назад"])
+
+                review_callback = DummyCallbackQuery(
+                    "self_delete:review",
+                    message=message,
+                    user_id=user_id,
+                    full_name="Test",
+                    bot=bot,
+                )
+                await process_self_delete_review(review_callback, FakeDB())
+
+                self.assertIn("Финальное подтверждение", message.edits[-1])
+                self.assertEqual(_keyboard_texts(message.reply_markups[-1]), ["🗑 Да, удалить профиль", "◀️ Назад"])
 
                 confirm_callback = DummyCallbackQuery(
                     "self_delete:confirm",
@@ -206,8 +224,8 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
         await admin_broadcast_confirm_text(confirm_callback, state, FakeDB())
 
         self.assertIn("Выберите получателей рассылки", message.edits[-1])
-        self.assertEqual(_keyboard_texts(message.reply_markups[-1])[0], "✅ Анна")
-        self.assertIn("Сейчас выбраны все ученики", message.edits[-1])
+        self.assertEqual(_keyboard_texts(message.reply_markups[-1])[0], "☐ Анна")
+        self.assertIn("Сейчас никто не выбран", message.edits[-1])
 
         toggle_callback = DummyCallbackQuery("bc_toggle:11", message=message, user_id=config.ADMIN_ID, bot=bot)
         await bc_toggle_recipient(toggle_callback, state)
@@ -233,7 +251,7 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
             "reply:broadcast",
         )
         self.assertIn("Рассылка завершена", message.edits[-1])
-        self.assertEqual(_keyboard_texts(message.reply_markups[-1]), ["◀️ К коммуникациям"])
+        self.assertEqual(_keyboard_texts(message.reply_markups[-1]), ["◀️ К панели"])
 
     async def test_broadcast_accepts_gif_and_copies_it_with_reply_button(self):
         state = DummyState()

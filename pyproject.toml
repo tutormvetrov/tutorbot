@@ -12,12 +12,18 @@ follow_imports = "skip"
 namespace_packages = true
 explicit_package_bases = true
 files = [
+    "app.py",
+    "loader.py",
     "data/config.py",
     "utils/config_validation.py",
+    "utils/time.py",
     "utils/ui_text.py",
     "utils/text_utils.py",
     "utils/fsm_storage.py",
     "utils/observability.py",
+    "utils/google_calendar.py",
+    "utils/scheduler.py",
+    "utils/db_api/postgresql.py",
 ]
 
 [tool.pytest.ini_options]

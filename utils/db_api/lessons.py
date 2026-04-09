@@ -1,5 +1,7 @@
 from typing import Optional
 
+from utils.time import business_naive_now
+
 
 class DatabaseLessonMixin:
     async def get_lessons_for_reminder(self):
@@ -21,18 +23,130 @@ class DatabaseLessonMixin:
               AND (
                   (
                       COALESCE(u.lesson_format, 'online') != 'offline'
-                      AND l.lesson_date >= NOW() + INTERVAL '5 minutes'
+                      AND l.lesson_date >= NOW()
                       AND l.lesson_date <= NOW() + INTERVAL '15 minutes'
                   )
                   OR
                   (
                       COALESCE(u.lesson_format, 'online') = 'offline'
-                      AND l.lesson_date >= NOW() + INTERVAL '55 minutes'
-                      AND l.lesson_date <= NOW() + INTERVAL '65 minutes'
+                      AND l.lesson_date >= NOW() + INTERVAL '45 minutes'
+                      AND l.lesson_date <= NOW() + INTERVAL '60 minutes'
                   )
               )
             """,
             fetch=True,
+        )
+
+    async def get_lessons_for_teacher_followup(self):
+        return await self.execute(
+            """
+            SELECT
+                l.id,
+                l.student_id,
+                l.lesson_date,
+                l.status,
+                u.full_name,
+                COALESCE(u.lesson_format, 'online') AS lesson_format,
+                COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes
+            FROM lessons l
+            JOIN users u ON u.telegram_id = l.student_id
+            WHERE l.lesson_date IS NOT NULL
+              AND l.status IN ('active', 'completed')
+              AND COALESCE(l.teacher_followup_sent, false) = false
+              AND u.role = 'student'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+              AND l.lesson_date + (COALESCE(u.lesson_duration_minutes, 90) * INTERVAL '1 minute') <= NOW()
+            ORDER BY l.lesson_date ASC
+            """,
+            fetch=True,
+        )
+
+    async def mark_teacher_followup_sent(self, lesson_id: int):
+        await self.execute(
+            "UPDATE lessons SET teacher_followup_sent = true WHERE id = $1",
+            lesson_id,
+            execute=True,
+        )
+
+    async def get_lessons_for_teacher_bookmark_reminder(self):
+        return await self.execute(
+            """
+            SELECT
+                l.id,
+                l.student_id,
+                l.lesson_date,
+                u.full_name,
+                COALESCE(u.lesson_format, 'online') AS lesson_format,
+                COALESCE(u.current_bookmark_state, 'empty') AS current_bookmark_state,
+                u.current_bookmark_text,
+                u.current_bookmark_updated_at,
+                u.current_bookmark_lesson_id
+            FROM lessons l
+            JOIN users u ON u.telegram_id = l.student_id
+            WHERE l.status = 'active'
+              AND l.lesson_date IS NOT NULL
+              AND COALESCE(l.teacher_pre_lesson_note_sent, false) = false
+              AND u.role = 'student'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+              AND (
+                  (
+                      COALESCE(u.lesson_format, 'online') != 'offline'
+                      AND l.lesson_date >= NOW()
+                      AND l.lesson_date <= NOW() + INTERVAL '30 minutes'
+                  )
+                  OR
+                  (
+                      COALESCE(u.lesson_format, 'online') = 'offline'
+                      AND l.lesson_date >= NOW() + INTERVAL '45 minutes'
+                      AND l.lesson_date <= NOW() + INTERVAL '60 minutes'
+                  )
+              )
+            ORDER BY l.lesson_date ASC
+            """,
+            fetch=True,
+        )
+
+    async def mark_teacher_pre_lesson_note_sent(self, lesson_id: int):
+        await self.execute(
+            "UPDATE lessons SET teacher_pre_lesson_note_sent = true WHERE id = $1",
+            lesson_id,
+            execute=True,
+        )
+
+    async def get_lesson_context(self, lesson_id: int):
+        return await self.execute(
+            """
+            SELECT
+                l.id,
+                l.student_id,
+                l.lesson_date,
+                l.teacher_comment,
+                u.full_name,
+                COALESCE(u.lesson_format, 'online') AS lesson_format,
+                COALESCE(u.current_bookmark_state, 'empty') AS current_bookmark_state,
+                u.current_bookmark_text,
+                COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes
+            FROM lessons l
+            JOIN users u ON u.telegram_id = l.student_id
+            WHERE l.id = $1
+            """,
+            lesson_id,
+            fetchrow=True,
+        )
+
+    async def save_teacher_comment(self, lesson_id: int, comment_text: str):
+        await self.execute(
+            """
+            UPDATE lessons
+            SET teacher_comment = $2,
+                teacher_comment_saved_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            """,
+            lesson_id,
+            comment_text,
+            execute=True,
         )
 
     async def mark_lesson_reminder_sent(self, lesson_id: int):
@@ -114,8 +228,10 @@ class DatabaseLessonMixin:
     async def get_active_lessons(self, student_id: int):
         return await self.execute(
             """
-            SELECT * FROM lessons
-            WHERE student_id = $1 AND status = 'active'
+            SELECT l.*, COALESCE(u.lesson_format, 'online') AS lesson_format
+            FROM lessons l
+            JOIN users u ON u.telegram_id = l.student_id
+            WHERE l.student_id = $1 AND l.status = 'active'
             ORDER BY lesson_date ASC NULLS LAST, created_at DESC
             """,
             student_id, fetch=True,
@@ -144,7 +260,7 @@ class DatabaseLessonMixin:
 
     async def upsert_lesson_from_calendar(self, student_id: int, google_event_id: str, lesson_date):
         existing = await self.execute(
-            "SELECT id FROM lessons WHERE google_event_id = $1",
+            "SELECT id, lesson_date FROM lessons WHERE google_event_id = $1",
             google_event_id, fetchrow=True,
         )
         if existing:
@@ -153,6 +269,22 @@ class DatabaseLessonMixin:
                 UPDATE lessons
                 SET lesson_date = $2,
                     student_id = $3,
+                    reminder_sent = CASE
+                        WHEN lesson_date IS DISTINCT FROM $2 THEN false
+                        ELSE reminder_sent
+                    END,
+                    homework_check_reminder_sent = CASE
+                        WHEN lesson_date IS DISTINCT FROM $2 THEN false
+                        ELSE homework_check_reminder_sent
+                    END,
+                    teacher_followup_sent = CASE
+                        WHEN lesson_date IS DISTINCT FROM $2 THEN false
+                        ELSE teacher_followup_sent
+                    END,
+                    teacher_pre_lesson_note_sent = CASE
+                        WHEN lesson_date IS DISTINCT FROM $2 THEN false
+                        ELSE teacher_pre_lesson_note_sent
+                    END,
                     status = 'active',
                     source = 'calendar'
                 WHERE google_event_id = $1
@@ -276,9 +408,9 @@ class DatabaseLessonMixin:
         )
 
     async def get_google_event_ids_in_window(self, days_ahead: int = 60) -> list:
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
-        now = datetime.now()
+        now = business_naive_now()
         end = now + timedelta(days=days_ahead)
         rows = await self.execute(
             """
