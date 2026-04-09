@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-INTERNAL_TEST_ACCOUNT_RULES = []
+INTERNAL_TEST_ACCOUNT_RULES: list[dict[str, object]] = []
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 

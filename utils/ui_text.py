@@ -1195,7 +1195,7 @@ def build_admin_parent_card_text(parent, children: list[dict], payments_as_payer
         ])
         return "\n".join(lines)
 
-    status_labels = {
+    status_labels: dict[object, str] = {
         "linked": "✅ привязан",
         "waiting_link": "⏳ ждёт привязки",
         "inactive_student": "⚠️ ученик неактивен",
