@@ -57,7 +57,10 @@ class GoogleCalendarSyncTest(unittest.IsolatedAsyncioTestCase):
             def events(self):
                 return _EventsApi()
 
-        with patch("utils.google_calendar._build_service", return_value=_Service()):
+        with (
+            patch("utils.google_calendar._build_service", return_value=_Service()),
+            patch("utils.google_calendar.config.GOOGLE_CALENDAR_ID", "calendar@example.com"),
+        ):
             events, pages_fetched = google_calendar._fetch_events(days_ahead=14)
 
         self.assertEqual([item["id"] for item in events], ["evt-1", "evt-2"])
