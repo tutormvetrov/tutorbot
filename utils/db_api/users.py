@@ -1,3 +1,5 @@
+import secrets
+
 from data.config import normalize_person_name
 from utils.text_utils import extract_student_name
 
@@ -264,6 +266,308 @@ class DatabaseUserMixin:
             )
         return updated
 
+    async def create_student_pair(
+        self,
+        primary_student_id: int,
+        primary_member_name: str,
+        partner_name: str,
+        *,
+        title: str | None = None,
+        onboarding_source: str = "admin",
+    ) -> int:
+        clean_primary = " ".join((primary_member_name or "").split()).strip()
+        clean_partner = " ".join((partner_name or "").split()).strip()
+        if not clean_primary or not clean_partner:
+            raise ValueError("Both pair members must have names.")
+
+        pair_title = title or f"{clean_primary} + {clean_partner}"
+        group_id = await self.execute(
+            """
+            INSERT INTO student_groups (
+                group_type,
+                title,
+                primary_student_id,
+                balance_mode,
+                homework_mode,
+                onboarding_source
+            )
+            VALUES ('pair', $1, $2, 'shared', 'shared', $3)
+            RETURNING id
+            """,
+            pair_title,
+            primary_student_id,
+            onboarding_source,
+            fetchval=True,
+        )
+        await self.execute(
+            """
+            INSERT INTO student_group_members (
+                group_id,
+                student_id,
+                member_name,
+                member_role,
+                has_bot_access
+            )
+            VALUES
+                ($1, $2, $3, 'primary', true),
+                ($1, NULL, $4, 'partner', false)
+            """,
+            group_id,
+            primary_student_id,
+            clean_primary,
+            clean_partner,
+            execute=True,
+        )
+        return int(group_id)
+
+    def _pair_select_sql(self, where_clause: str) -> str:
+        return f"""
+            SELECT
+                g.*,
+                u.full_name AS primary_student_name,
+                COALESCE((
+                    SELECT SUM(p.lessons_remaining)::int
+                    FROM payments p
+                    WHERE p.student_id = g.primary_student_id
+                      AND p.status = 'confirmed'
+                ), 0) AS lesson_balance,
+                (
+                    SELECT MIN(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = g.primary_student_id
+                      AND l.status = 'active'
+                      AND l.lesson_date IS NOT NULL
+                ) AS next_lesson_date,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM homework h
+                    WHERE h.student_id = g.primary_student_id
+                      AND h.status = 'active'
+                ), 0) AS active_homework_count,
+                ARRAY_REMOVE(ARRAY_AGG(
+                    m.member_name
+                    ORDER BY
+                        CASE WHEN m.member_role = 'primary' THEN 0 ELSE 1 END,
+                        m.id
+                ), NULL) AS member_names,
+                STRING_AGG(
+                    CASE WHEN m.member_role <> 'primary' THEN m.member_name ELSE NULL END,
+                    ', '
+                    ORDER BY m.id
+                ) AS partner_names
+            FROM student_groups g
+            JOIN users u
+              ON u.telegram_id = g.primary_student_id
+            LEFT JOIN student_group_members m
+              ON m.group_id = g.id
+            WHERE g.group_type = 'pair'
+              AND g.is_active = true
+              AND {where_clause}
+            GROUP BY g.id, u.full_name
+        """
+
+    async def get_student_pair_for_student(self, student_id: int):
+        return await self.execute(
+            self._pair_select_sql(
+                """
+                (
+                    g.primary_student_id = $1
+                    OR EXISTS (
+                        SELECT 1
+                        FROM student_group_members sm
+                        WHERE sm.group_id = g.id
+                          AND sm.student_id = $1
+                    )
+                )
+                """
+            )
+            + "\nORDER BY g.created_at DESC, g.id DESC LIMIT 1",
+            student_id,
+            fetchrow=True,
+        )
+
+    async def get_student_pair(self, group_id: int):
+        return await self.execute(
+            self._pair_select_sql("g.id = $1"),
+            group_id,
+            fetchrow=True,
+        )
+
+    async def get_student_pairs_overview(self):
+        return await self.execute(
+            self._pair_select_sql("true") + "\nORDER BY g.created_at DESC, g.id DESC",
+            fetch=True,
+        )
+
+    async def ensure_student_pair_invite(self, group_id: int):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                member = await conn.fetchrow(
+                    """
+                    SELECT
+                        m.id AS member_id,
+                        m.group_id,
+                        m.student_id,
+                        m.member_name,
+                        m.invite_token,
+                        m.invite_created_at,
+                        m.invite_used_at,
+                        g.title,
+                        g.primary_student_id,
+                        u.full_name AS primary_student_name
+                    FROM student_group_members m
+                    JOIN student_groups g
+                      ON g.id = m.group_id
+                    JOIN users u
+                      ON u.telegram_id = g.primary_student_id
+                    WHERE m.group_id = $1
+                      AND g.group_type = 'pair'
+                      AND g.is_active = true
+                      AND m.member_role <> 'primary'
+                    ORDER BY
+                        CASE WHEN m.student_id IS NULL THEN 0 ELSE 1 END,
+                        m.id
+                    LIMIT 1
+                    """,
+                    group_id,
+                )
+                if not member:
+                    return None
+                if member["invite_token"]:
+                    return member
+
+                token = secrets.token_urlsafe(18)
+                return await conn.fetchrow(
+                    """
+                    UPDATE student_group_members m
+                    SET invite_token = $2,
+                        invite_created_at = CURRENT_TIMESTAMP
+                    FROM student_groups g
+                    JOIN users u
+                      ON u.telegram_id = g.primary_student_id
+                    WHERE m.id = $1
+                      AND g.id = m.group_id
+                    RETURNING
+                        m.id AS member_id,
+                        m.group_id,
+                        m.student_id,
+                        m.member_name,
+                        m.invite_token,
+                        m.invite_created_at,
+                        m.invite_used_at,
+                        g.title,
+                        g.primary_student_id,
+                        u.full_name AS primary_student_name
+                    """,
+                    member["member_id"],
+                    token,
+                )
+
+    async def get_student_pair_invite(self, token: str):
+        return await self.execute(
+            """
+            SELECT
+                m.id AS member_id,
+                m.group_id,
+                m.student_id,
+                m.member_name,
+                m.invite_token,
+                m.invite_created_at,
+                m.invite_used_at,
+                g.title,
+                g.primary_student_id,
+                u.full_name AS primary_student_name
+            FROM student_group_members m
+            JOIN student_groups g
+              ON g.id = m.group_id
+            JOIN users u
+              ON u.telegram_id = g.primary_student_id
+            WHERE m.invite_token = $1
+              AND g.group_type = 'pair'
+              AND g.is_active = true
+            """,
+            token,
+            fetchrow=True,
+        )
+
+    async def accept_student_pair_invite(
+        self,
+        token: str,
+        telegram_id: int,
+        telegram_full_name: str,
+        username: str | None = None,
+    ):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                invite = await conn.fetchrow(
+                    """
+                    SELECT
+                        m.id AS member_id,
+                        m.group_id,
+                        m.student_id,
+                        m.member_name,
+                        m.invite_token,
+                        m.invite_created_at,
+                        m.invite_used_at,
+                        g.title,
+                        g.primary_student_id,
+                        u.full_name AS primary_student_name
+                    FROM student_group_members m
+                    JOIN student_groups g
+                      ON g.id = m.group_id
+                    JOIN users u
+                      ON u.telegram_id = g.primary_student_id
+                    WHERE m.invite_token = $1
+                      AND g.group_type = 'pair'
+                      AND g.is_active = true
+                    FOR UPDATE OF m
+                    """,
+                    token,
+                )
+                if not invite:
+                    return None
+                if invite["student_id"] and invite["student_id"] != telegram_id:
+                    return invite
+
+                clean_name = " ".join((invite["member_name"] or telegram_full_name or "").split()).strip()
+                if not clean_name:
+                    clean_name = telegram_full_name or str(telegram_id)
+
+                await conn.execute(
+                    """
+                    INSERT INTO users (telegram_id, full_name, username, role)
+                    VALUES ($1, $2, $3, 'student')
+                    ON CONFLICT (telegram_id) DO UPDATE
+                    SET full_name = EXCLUDED.full_name,
+                        username = EXCLUDED.username,
+                        role = EXCLUDED.role,
+                        is_active = true
+                    """,
+                    telegram_id,
+                    clean_name,
+                    username,
+                )
+                await conn.execute(
+                    """
+                    UPDATE student_group_members
+                    SET student_id = $2,
+                        has_bot_access = true,
+                        invite_used_at = COALESCE(invite_used_at, CURRENT_TIMESTAMP)
+                    WHERE id = $1
+                    """,
+                    invite["member_id"],
+                    telegram_id,
+                )
+
+        return await self.get_student_pair_for_student(telegram_id)
+
+    async def deactivate_student_pair(self, group_id: int):
+        await self.execute(
+            "UPDATE student_groups SET is_active = false WHERE id = $1",
+            group_id,
+            execute=True,
+        )
+
     async def get_parent_children(self, parent_id: int) -> list[str]:
         links = await self.execute(
             """
@@ -465,7 +769,25 @@ class DatabaseUserMixin:
                       AND l.lesson_date IS NOT NULL
                 ) AS next_lesson_date,
                 COALESCE(u.lesson_format, 'online') AS lesson_format,
-                COALESCE(u.speech_style, 'formal') AS speech_style
+                COALESCE(u.speech_style, 'formal') AS speech_style,
+                (
+                    SELECT sg.id
+                    FROM student_groups sg
+                    WHERE sg.primary_student_id = u.telegram_id
+                      AND sg.group_type = 'pair'
+                      AND sg.is_active = true
+                    ORDER BY sg.created_at DESC, sg.id DESC
+                    LIMIT 1
+                ) AS pair_id,
+                (
+                    SELECT sg.title
+                    FROM student_groups sg
+                    WHERE sg.primary_student_id = u.telegram_id
+                      AND sg.group_type = 'pair'
+                      AND sg.is_active = true
+                    ORDER BY sg.created_at DESC, sg.id DESC
+                    LIMIT 1
+                ) AS pair_title
             FROM users u
             WHERE u.role = 'student'
               AND u.is_active = true

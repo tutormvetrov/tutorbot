@@ -27,6 +27,9 @@ class DummyBot:
         self.edited_messages = []
         self.copied_messages = []
 
+    async def get_me(self):
+        return SimpleNamespace(username="tutorbot_test")
+
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent_messages.append(
             SimpleNamespace(chat_id=chat_id, text=text, reply_markup=reply_markup)

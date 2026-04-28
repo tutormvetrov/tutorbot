@@ -18,6 +18,7 @@ from keyboards.inline import (
     make_parent_payments_keyboard, make_level_test_link_keyboard, make_profile_danger_keyboard,
     make_self_delete_confirm_keyboard, make_self_delete_review_keyboard,
     make_teacher_reply_keyboard, make_write_to_student_keyboard, make_back_button_keyboard,
+    make_study_plan_keyboard,
 )
 from states.registration import FreezeConfirm, StudentReply
 from utils.db_api.postgresql import Database
@@ -51,6 +52,7 @@ from utils.ui_text import (
     build_self_delete_final_warning_text,
     build_self_delete_success_text,
     build_self_delete_warning_text,
+    build_study_plan_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,15 @@ async def _resolve_actor_context(db: Database, actor_id: int):
     get_user = getattr(db, "get_user", None)
     user = await get_user(actor_id) if callable(get_user) else None
     return actor_id, user, None
+
+
+async def _get_learning_student_id(db: Database, student_id: int) -> int:
+    get_pair = getattr(db, "get_student_pair_for_student", None)
+    if callable(get_pair):
+        pair = await get_pair(student_id)
+        if pair:
+            return int(pair["primary_student_id"])
+    return student_id
 
 
 async def _edit_text_for_actor(message: types.Message, text: str, reply_markup, preview: dict | None):
@@ -219,7 +230,8 @@ async def _render_notifications_screen(message: types.Message, db: Database, use
 
 
 async def _render_homework_list(message: types.Message, db: Database, user_id: int, status: str = "active", preview: dict | None = None):
-    items = await db.get_student_homework(user_id, status)
+    learning_user_id = await _get_learning_student_id(db, user_id)
+    items = await db.get_student_homework(learning_user_id, status)
     await _edit_text_for_actor(
         message,
         build_homework_text(items, status),
@@ -229,8 +241,9 @@ async def _render_homework_list(message: types.Message, db: Database, user_id: i
 
 
 async def _render_homework_detail(message: types.Message, db: Database, user_id: int, hw_id: int, status: str, preview: dict | None = None):
+    learning_user_id = await _get_learning_student_id(db, user_id)
     hw = await db.get_homework_by_id(hw_id)
-    if not hw or hw["student_id"] != user_id or (status and hw["status"] != status):
+    if not hw or hw["student_id"] != learning_user_id or (status and hw["status"] != status):
         await _edit_text_for_actor(
             message,
             "ℹ️ Задание не найдено или уже недоступно.",
@@ -255,6 +268,43 @@ async def _render_homework_detail(message: types.Message, db: Database, user_id:
             f"📅 Дедлайн: <b>{hw['deadline'].strftime('%d.%m.%Y') if hw.get('deadline') else '—'}</b>",
         ]),
         make_homework_item_keyboard(hw_id, status, has_attachment=bool(hw.get("attachment_file_id"))),
+        preview,
+    )
+
+
+async def _render_study_plan(
+    message: types.Message,
+    db: Database,
+    user_id: int,
+    preview: dict | None = None,
+    *,
+    parent_link_id: int | None = None,
+):
+    learning_user_id = await _get_learning_student_id(db, user_id)
+    user = await db.get_user(user_id)
+    if not user:
+        await _edit_text_for_actor(message, REGISTRATION_REQUIRED_TEXT, back_to_menu_keyboard, preview)
+        return
+
+    plan = await db.get_active_learning_plan(learning_user_id)
+    checklist = await db.ensure_study_plan_checklist(learning_user_id)
+    homework = list(await db.get_student_homework(learning_user_id, "active") or [])
+    pair = None
+    get_pair = getattr(db, "get_student_pair_for_student", None)
+    if callable(get_pair):
+        pair = await get_pair(learning_user_id)
+
+    await _edit_text_for_actor(
+        message,
+        build_study_plan_text(
+            user,
+            plan,
+            checklist.get("lesson"),
+            homework,
+            list(checklist.get("items") or []),
+            pair=pair,
+        ),
+        make_study_plan_keyboard(plan, list(checklist.get("items") or []), parent_link_id=parent_link_id),
         preview,
     )
 
@@ -342,13 +392,15 @@ async def process_menu_choice(callback_query: types.CallbackQuery, db: Database)
         await callback_query.answer()
         return
 
+    learning_user_id = await _get_learning_student_id(db, user_id) if user.get("role") == "student" else user_id
+
     if choice == 'schedule':
-        lessons = await db.get_active_lessons(user_id)
+        lessons = await db.get_active_lessons(learning_user_id)
         text = build_schedule_text(lessons, lesson_format=user.get("lesson_format"))
         await _edit_text_for_actor(callback_query.message, text, back_to_menu_keyboard, preview)
 
     elif choice == 'freeze':
-        lessons = await db.get_active_lessons(user_id)
+        lessons = await db.get_active_lessons(learning_user_id)
         active_count = len(lessons)
         if not active_count:
             await _edit_text_for_actor(
@@ -371,8 +423,8 @@ async def process_menu_choice(callback_query: types.CallbackQuery, db: Database)
             )
 
     elif choice == 'payment':
-        payments = await db.get_student_payments(user_id)
-        balance = await db.get_student_lesson_balance(user_id)
+        payments = await db.get_student_payments(learning_user_id)
+        balance = await db.get_student_lesson_balance(learning_user_id)
         text = build_payment_text(balance, payments)
         await _edit_text_for_actor(callback_query.message, text, payment_keyboard, preview)
 
@@ -380,6 +432,47 @@ async def process_menu_choice(callback_query: types.CallbackQuery, db: Database)
         await render_profile_screen(callback_query.message, db, callback_query.from_user.id)
 
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "study_plan")
+async def process_study_plan(callback_query: types.CallbackQuery, db: Database):
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "student":
+        await callback_query.answer("Учебный план доступен ученикам.", show_alert=True)
+        return
+    await _render_study_plan(callback_query.message, db, user_id, preview=preview)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("study_plan:file:"))
+async def process_study_plan_file(callback_query: types.CallbackQuery, db: Database):
+    user_id, user, _ = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "student":
+        await callback_query.answer("Учебный план доступен ученикам.", show_alert=True)
+        return
+    learning_user_id = await _get_learning_student_id(db, user_id)
+    plan_id = int(callback_query.data.split(":")[2])
+    plan = await db.get_learning_plan_by_id(plan_id)
+    if not plan or plan.get("student_id") != learning_user_id or plan.get("status") != "active":
+        await callback_query.answer("PDF-план не найден.", show_alert=True)
+        return
+    await callback_query.bot.send_document(callback_query.from_user.id, plan["file_id"])
+    await callback_query.answer("PDF отправлен.")
+
+
+@router.callback_query(lambda c: c.data.startswith("study_plan:toggle:"))
+async def process_study_plan_toggle(callback_query: types.CallbackQuery, db: Database):
+    if await _block_preview_action(callback_query, db):
+        return
+    user_id = callback_query.from_user.id
+    learning_user_id = await _get_learning_student_id(db, user_id)
+    item_id = int(callback_query.data.split(":")[2])
+    item = await db.toggle_study_plan_checklist_item(item_id, learning_user_id)
+    if not item:
+        await callback_query.answer("Пункт не найден.", show_alert=True)
+        return
+    await _render_study_plan(callback_query.message, db, user_id)
+    await callback_query.answer("Готово.")
 
 
 @router.callback_query(lambda c: c.data == "parent:home")
@@ -523,6 +616,72 @@ async def process_parent_child_payments(callback_query: types.CallbackQuery, db:
         callback_query.message,
         build_payment_text(balance, list(payments or [])),
         make_parent_payments_keyboard(link_id),
+        preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and c.data.endswith(":study_plan"))
+async def process_parent_child_study_plan(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    link_id = int(callback_query.data.split(":")[2])
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child or child.get("link_status") != "linked":
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    await _render_study_plan(
+        callback_query.message,
+        db,
+        int(child["student_id"]),
+        preview=preview,
+        parent_link_id=link_id,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and ":study_plan:file:" in c.data)
+async def process_parent_child_study_plan_file(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    parts = callback_query.data.split(":")
+    link_id = int(parts[2])
+    plan_id = int(parts[-1])
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child or child.get("link_status") != "linked":
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    learning_user_id = await _get_learning_student_id(db, int(child["student_id"]))
+    plan = await db.get_learning_plan_by_id(plan_id)
+    if not plan or plan.get("student_id") != learning_user_id or plan.get("status") != "active":
+        await callback_query.answer("PDF-план не найден.", show_alert=True)
+        return
+    await callback_query.bot.send_document(callback_query.from_user.id, plan["file_id"])
+    await callback_query.answer("PDF отправлен.")
+
+
+@router.callback_query(lambda c: c.data.startswith("parent:child:") and c.data.endswith(":requisites"))
+async def process_parent_child_requisites(callback_query: types.CallbackQuery, db: Database):
+    parent_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") != "parent":
+        await callback_query.answer("Этот экран доступен только родителям.", show_alert=True)
+        return
+    link_id = int(callback_query.data.split(":")[2])
+    child = await _get_parent_child_link(db, parent_id, link_id, preview)
+    if not child or child.get("link_status") != "linked":
+        await callback_query.answer("Ребёнок не найден в вашем кабинете.", show_alert=True)
+        return
+    info = load_teacher_info()
+    learning_user_id = await _get_learning_student_id(db, int(child["student_id"]))
+    pricing_context = await db.get_student_pricing_context(learning_user_id)
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_requisites_text(info.get("requisites", {}), pricing_context),
+        make_back_button_keyboard("◀️ К оплате", f"parent:child:{link_id}:payments"),
         preview,
     )
     await callback_query.answer()
@@ -678,10 +837,21 @@ def _get_project_site_url(info: dict | None = None) -> str:
     return contacts.get("project_site_url", "") or info.get("project_site_url", "")
 
 
+def _get_materials_url(info: dict | None = None) -> str:
+    info = info or load_teacher_info()
+    contacts = info.get("contacts", {})
+    return (
+        contacts.get("materials_url", "")
+        or contacts.get("filen_url", "")
+        or info.get("materials_url", "")
+        or info.get("filen_url", "")
+    )
+
+
 @router.callback_query(lambda c: c.data == 'contacts')
 async def process_contacts(callback_query: types.CallbackQuery, db: Database):
     info = load_teacher_info()
-    _, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     text = _build_contacts_text(info, show_address=bool(user))
     contacts = info.get('contacts', {})
     kb = make_contacts_keyboard(
@@ -690,6 +860,7 @@ async def process_contacts(callback_query: types.CallbackQuery, db: Database):
         vk_call_url=contacts.get('vk_call', ''),
         google_meet_url=contacts.get('google_meet', ''),
         website_url=_get_project_site_url(info),
+        materials_url=_get_materials_url(info),
     )
     await _edit_text_for_actor(callback_query.message, text, kb, preview)
     await callback_query.answer()
@@ -867,7 +1038,7 @@ async def process_self_delete_confirm(callback_query: types.CallbackQuery, db: D
 
 @router.callback_query(lambda c: c.data in {'requisites', 'payment:requisites'})
 async def process_requisites(callback_query: types.CallbackQuery, db: Database):
-    _, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     back_keyboard = (
         make_back_button_keyboard("◀️ Назад к оплате", "payment")
         if callback_query.data == "payment:requisites"
@@ -886,9 +1057,13 @@ async def process_requisites(callback_query: types.CallbackQuery, db: Database):
         return
 
     info = load_teacher_info()
+    pricing_context = None
+    if user.get("role") == "student":
+        learning_user_id = await _get_learning_student_id(db, user_id)
+        pricing_context = await db.get_student_pricing_context(learning_user_id)
     await _edit_text_for_actor(
         callback_query.message,
-        build_requisites_text(info.get("requisites", {})),
+        build_requisites_text(info.get("requisites", {}), pricing_context),
         back_keyboard,
         preview,
     )
@@ -904,7 +1079,8 @@ async def process_freeze_reason(callback_query: types.CallbackQuery, state: FSMC
 
     reason = callback_query.data.split(':')[1]
     label = FREEZE_REASON_LABELS.get(reason, reason)
-    active_lessons = await db.get_active_lessons(callback_query.from_user.id)
+    learning_user_id = await _get_learning_student_id(db, callback_query.from_user.id)
+    active_lessons = await db.get_active_lessons(learning_user_id)
     active_count = len(active_lessons)
 
     if not active_count:
@@ -922,7 +1098,11 @@ async def process_freeze_reason(callback_query: types.CallbackQuery, state: FSMC
         return
 
     await state.set_state(FreezeConfirm.waiting_for_confirm)
-    await state.update_data(freeze_reason=reason, freeze_active_count=active_count)
+    await state.update_data(
+        freeze_reason=reason,
+        freeze_active_count=active_count,
+        freeze_student_id=learning_user_id,
+    )
 
     await callback_query.message.edit_text(
         build_freeze_confirm_text(label, active_count),
@@ -940,8 +1120,11 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
         return
 
     reason = callback_query.data.split(':', 1)[1]
-    user_id = callback_query.from_user.id
     state_data = await state.get_data()
+    freeze_student_id = state_data.get("freeze_student_id")
+    if freeze_student_id is None:
+        freeze_student_id = await _get_learning_student_id(db, callback_query.from_user.id)
+    user_id = int(freeze_student_id)
 
     async with db.pool.acquire() as conn:
         active = await conn.fetch(
@@ -1034,8 +1217,9 @@ async def process_homework_attachment(callback_query: types.CallbackQuery, db: D
     hw_id = int(parts[2])
     status = parts[3]
     user_id = callback_query.from_user.id
+    learning_user_id = await _get_learning_student_id(db, user_id)
     hw = await db.get_homework_by_id(hw_id)
-    if not hw or hw["student_id"] != user_id or (status and hw["status"] != status):
+    if not hw or hw["student_id"] != learning_user_id or (status and hw["status"] != status):
         await callback_query.answer("Задание не найдено или уже недоступно.", show_alert=True)
         return
     if not hw.get("attachment_file_id"):
@@ -1057,9 +1241,10 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
         return
 
     user_id = callback_query.from_user.id
+    learning_user_id = await _get_learning_student_id(db, user_id)
     hw_id = int(callback_query.data.split(':')[1])
     hw = await db.get_homework_by_id(hw_id)
-    if not hw or hw['student_id'] != user_id or hw['status'] != 'active':
+    if not hw or hw['student_id'] != learning_user_id or hw['status'] != 'active':
         await callback_query.message.edit_text(
             "ℹ️ Задание не найдено или уже отмечено как выполненное.",
             reply_markup=back_to_menu_keyboard,
@@ -1067,7 +1252,7 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
         await callback_query.answer()
         return
 
-    await db.mark_homework_done(hw_id, user_id)
+    await db.mark_homework_done(hw_id, learning_user_id)
     homework_html = homework_body_html(
         hw.get("title"),
         hw.get("description"),

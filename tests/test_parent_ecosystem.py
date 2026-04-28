@@ -41,7 +41,7 @@ class RegistrationEntryPointTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("выберите вашу роль", message.answers[-1].lower())
         self.assertEqual(
             _keyboard_texts(message.reply_markups[-1]),
-            ["🎓 Я ученик", "👨‍👩‍👧 Я родитель ученика"],
+            ["🎓 Я ученик", "👥 Мы занимаемся вдвоём", "👨‍👩‍👧 Я родитель ученика"],
         )
 
 

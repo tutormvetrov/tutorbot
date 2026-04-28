@@ -242,6 +242,15 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
         class FakeDB:
             def __init__(self):
                 self.calls = []
+                self.homework = {
+                    "id": 777,
+                    "student_id": 555,
+                    "title": "",
+                    "description": text,
+                    "attachment_name": None,
+                    "attachment_mime_type": None,
+                    "deadline": datetime(2026, 4, 5),
+                }
 
             async def add_homework(self, student_id, title, description, deadline, attachment=None):
                 self.calls.append((student_id, title, description, deadline, attachment))
@@ -250,9 +259,19 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_user(self, telegram_id):
                 return {"full_name": "Иван Петров"}
 
+            async def get_homework_by_id(self, hw_id):
+                return self.homework if hw_id == 777 else None
+
+            async def clear_homework_delivery(self, homework_id):
+                return None
+
+            async def upsert_homework_delivery(self, homework_id, student_id, delivery_kind, deliver_after, include_attachment=False):
+                return None
+
         db = FakeDB()
         deadline_message = DummyMessage("05/04/2026", user_id=1)
-        await admin_hw_deadline_entered(deadline_message, state, db)
+        with patch("handlers.users.admin_sections.homework.business_now", return_value=datetime(2026, 4, 5, 12, 0)):
+            await admin_hw_deadline_entered(deadline_message, state, db)
 
         self.assertEqual(db.calls[0][0], 555)
         self.assertEqual(db.calls[0][3].strftime("%d.%m.%Y"), "05.04.2026")
@@ -314,9 +333,16 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_homework_by_id(self, hw_id):
                 return self.homework if hw_id == 777 else None
 
+            async def clear_homework_delivery(self, homework_id):
+                return None
+
+            async def upsert_homework_delivery(self, homework_id, student_id, delivery_kind, deliver_after, include_attachment=False):
+                return None
+
         db = FakeDB()
         deadline_message = DummyMessage("05.04.2026", user_id=1, bot=bot)
-        await admin_hw_deadline_entered(deadline_message, state, db)
+        with patch("handlers.users.admin_sections.homework.business_now", return_value=datetime(2026, 4, 5, 12, 0)):
+            await admin_hw_deadline_entered(deadline_message, state, db)
 
         self.assertEqual(db.calls[0][4]["file_name"], "COD+.docx")
         self.assertEqual(bot.sent_documents[0].document, "doc-file-id")
@@ -399,6 +425,12 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_all_active_homework(self):
                 return [self.homework]
 
+            async def clear_homework_delivery(self, homework_id):
+                return None
+
+            async def upsert_homework_delivery(self, homework_id, student_id, delivery_kind, deliver_after, include_attachment=False):
+                return None
+
         db = FakeDB()
         await admin_homework_edit_start(callback, state, db)
         self.assertEqual(state.state.state, "AdminEditHomework:waiting_for_description")
@@ -414,7 +446,8 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.state.state, "AdminEditHomework:waiting_for_deadline")
 
         deadline_message = DummyMessage("12.04.2026", user_id=config.ADMIN_ID, bot=bot)
-        await admin_homework_edit_deadline_entered(deadline_message, state, db)
+        with patch("handlers.users.admin_sections.homework.business_now", return_value=datetime(2026, 4, 10, 12, 0)):
+            await admin_homework_edit_deadline_entered(deadline_message, state, db)
 
         self.assertEqual(db.update_calls[0][0], 77)
         self.assertEqual(db.update_calls[0][3], "Старое ДЗ")
@@ -464,6 +497,12 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_all_active_homework(self):
                 return [self.homework]
 
+            async def clear_homework_delivery(self, homework_id):
+                return None
+
+            async def upsert_homework_delivery(self, homework_id, student_id, delivery_kind, deliver_after, include_attachment=False):
+                return None
+
         db = FakeDB()
         await admin_homework_edit_start(callback, state, db)
 
@@ -480,7 +519,8 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
             full_name="Admin",
             bot=bot,
         )
-        await admin_homework_edit_keep_deadline(keep_deadline_callback, state, db)
+        with patch("handlers.users.admin_sections.homework.business_now", return_value=datetime(2026, 4, 10, 12, 0)):
+            await admin_homework_edit_keep_deadline(keep_deadline_callback, state, db)
 
         self.assertEqual(db.update_calls[0][0], 78)
         self.assertIn("<a href=\"https://example.com\">сюда</a>", db.update_calls[0][3])

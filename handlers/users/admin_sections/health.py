@@ -42,6 +42,10 @@ def _format_job_line(label: str, job: dict | None, metric_keys: tuple[str, ...] 
         "updated": "обновлено",
         "deleted": "удалено",
         "skipped": "пропущено",
+        "sent_students": "учеников",
+        "sent_items": "заданий",
+        "failed_items": "ошибок",
+        "due_items": "в очереди",
     }
     fragments = [f"• {label}: <b>{html.quote(str(job.get('status', 'unknown')))}</b>"]
     updated_at = _format_timestamp(job.get("updated_at"))
@@ -51,8 +55,7 @@ def _format_job_line(label: str, job: dict | None, metric_keys: tuple[str, ...] 
     metrics = []
     for key in metric_keys:
         if key in job:
-            metric_label = metric_labels.get(key, key)
-            metrics.append(f"{metric_label}={html.quote(str(job[key]))}")
+            metrics.append(f"{metric_labels.get(key, key)}={html.quote(str(job[key]))}")
     if metrics:
         fragments.append("· " + ", ".join(metrics))
     return " ".join(fragments)
@@ -77,7 +80,7 @@ def _service_navigation_keyboard(active_view: str) -> InlineKeyboardMarkup:
     else:
         rows.append([
             _btn(f"🎨 Тональность: {brand_tone_label(get_brand_tone())}", "admin:brand_tone"),
-            _btn("📝 Сообщения для отладки", "admin:notes"),
+            _btn("📝 Рабочие заметки", "admin:notes"),
         ])
 
     rows.append([_btn("◀️ К сервису", "admin:cat:service")])
@@ -108,17 +111,25 @@ def _format_health_text(student_count: int, report: dict, ops_status: dict, runt
         _format_job_line("Фоллоу-ап после урока", jobs.get("teacher_lesson_followup"), ("sent", "checked")),
         _format_job_line("Закладки перед уроком", jobs.get("teacher_bookmark_reminder"), ("sent", "checked")),
         _format_job_line("Домашка", jobs.get("homework_reminder"), ("sent",)),
+        _format_job_line(
+            "Отложенная домашка",
+            jobs.get("queued_homework_delivery"),
+            ("sent_students", "sent_items", "failed_items", "due_items"),
+        ),
         _format_job_line("Оплата (утро)", jobs.get("payment_reminder_morning"), ("unpaid", "paid")),
         _format_job_line("Оплата (вечер)", jobs.get("payment_reminder_evening"), ("unpaid", "paid")),
+        _format_job_line(
+            "Учебный план",
+            jobs.get("study_plan_weekly_digest"),
+            ("sent_students", "sent_parents", "checked_students", "checked_parents"),
+        ),
     ]
 
     if errors:
         lines.append("")
         lines.append("⚠️ <b>Последние ошибки jobs:</b>")
         for event in errors[-5:]:
-            lines.append(
-                f"• {html.quote(event.get('event_type', 'unknown'))} — {html.quote(event.get('status', 'unknown'))}"
-            )
+            lines.append(f"• {html.quote(event.get('event_type', 'unknown'))}: {html.quote(event.get('status', 'unknown'))}")
     else:
         lines.append("")
         lines.append(ADMIN_HEALTH_NO_ERRORS_TEXT)
@@ -137,8 +148,8 @@ def _format_service_context_text(ops_status: dict, runtime_events: list[dict]) -
         f"🎨 Тональность бренда: <b>{html.quote(tone)}</b>",
         f"⏱ Scheduler: <b>{html.quote(str(scheduler))}</b>",
         "",
-        "Здесь удобно держать рабочие настройки и отладочный контекст в одном месте.",
-        "Тональность меняется отдельной кнопкой, а рабочие сообщения для отладки находятся в этом же сервисном разделе.",
+        "Здесь собраны рабочие настройки и заметки по проекту.",
+        "Тональность меняется отдельной кнопкой, а заметки открываются в этом же сервисном разделе.",
     ]
     if errors:
         lines.extend([
@@ -170,7 +181,7 @@ async def _render_context_screen(callback_query: types.CallbackQuery, db: Databa
     )
 
 
-@router.callback_query(lambda c: c.data in {'admin:health', 'admin:service:monitoring'}, StateFilter('*'))
+@router.callback_query(lambda c: c.data in {"admin:health", "admin:service:monitoring"}, StateFilter("*"))
 async def admin_health(callback_query: types.CallbackQuery, db: Database):
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()
@@ -180,7 +191,7 @@ async def admin_health(callback_query: types.CallbackQuery, db: Database):
     await callback_query.answer()
 
 
-@router.callback_query(lambda c: c.data == 'admin:service:context', StateFilter('*'))
+@router.callback_query(lambda c: c.data == "admin:service:context", StateFilter("*"))
 async def admin_service_context(callback_query: types.CallbackQuery, db: Database):
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()

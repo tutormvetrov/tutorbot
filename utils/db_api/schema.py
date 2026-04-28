@@ -38,6 +38,58 @@ class DatabaseSchemaMixin:
             );
         """, execute=True)
 
+    async def create_table_student_groups(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_groups (
+                id SERIAL PRIMARY KEY,
+                group_type TEXT NOT NULL DEFAULT 'pair',
+                title TEXT NOT NULL,
+                primary_student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                balance_mode TEXT NOT NULL DEFAULT 'shared',
+                homework_mode TEXT NOT NULL DEFAULT 'shared',
+                onboarding_source TEXT DEFAULT 'admin',
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_group_members (
+                id SERIAL PRIMARY KEY,
+                group_id INTEGER NOT NULL REFERENCES student_groups(id) ON DELETE CASCADE,
+                student_id BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL,
+                member_name TEXT NOT NULL,
+                member_role TEXT NOT NULL DEFAULT 'partner',
+                has_bot_access BOOLEAN DEFAULT false,
+                invite_token TEXT UNIQUE,
+                invite_created_at TIMESTAMP,
+                invite_used_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_groups_primary_student_idx
+            ON student_groups (primary_student_id)
+            WHERE is_active = true;
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_group_members_group_id_idx
+            ON student_group_members (group_id);
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_group_members_student_id_idx
+            ON student_group_members (student_id)
+            WHERE student_id IS NOT NULL;
+            """,
+            execute=True,
+        )
+
     async def create_table_blocked_telegram_ids(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS blocked_telegram_ids (
@@ -88,6 +140,36 @@ class DatabaseSchemaMixin:
             );
         """, execute=True)
 
+    async def create_table_homework_delivery_queue(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS homework_delivery_queue (
+                id SERIAL PRIMARY KEY,
+                homework_id INTEGER NOT NULL UNIQUE REFERENCES homework(id) ON DELETE CASCADE,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                delivery_kind TEXT NOT NULL,
+                deliver_after TIMESTAMP NOT NULL,
+                include_attachment BOOLEAN DEFAULT false,
+                last_attempt_at TIMESTAMP,
+                attempts INTEGER DEFAULT 0,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS homework_delivery_queue_deliver_after_idx
+            ON homework_delivery_queue (deliver_after);
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS homework_delivery_queue_student_after_idx
+            ON homework_delivery_queue (student_id, deliver_after);
+            """,
+            execute=True,
+        )
+
     async def create_table_homework_material_mentions(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS homework_material_mentions (
@@ -122,6 +204,85 @@ class DatabaseSchemaMixin:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """, execute=True)
+
+    async def create_table_learning_plans(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_learning_plans (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'active',
+                summary TEXT,
+                parsed_text TEXT,
+                parser_status TEXT DEFAULT 'ok',
+                parser_warnings TEXT,
+                file_id TEXT NOT NULL,
+                file_unique_id TEXT,
+                file_name TEXT,
+                mime_type TEXT,
+                created_by BIGINT,
+                published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                archived_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS student_learning_plans_one_active_idx
+            ON student_learning_plans (student_id)
+            WHERE status = 'active';
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_learning_plans_student_status_idx
+            ON student_learning_plans (student_id, status, created_at DESC);
+            """,
+            execute=True,
+        )
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS study_plan_checklist_items (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'auto',
+                status TEXT NOT NULL DEFAULT 'pending',
+                sort_order INTEGER DEFAULT 0,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS study_plan_checklist_student_lesson_idx
+            ON study_plan_checklist_items (student_id, lesson_id, sort_order, id);
+            """,
+            execute=True,
+        )
+
+    async def create_table_lesson_pricing_rates(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_pricing_rates (
+                id SERIAL PRIMARY KEY,
+                group_size INTEGER NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'RUB',
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (group_size, duration_minutes)
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS lesson_pricing_rates_lookup_idx
+            ON lesson_pricing_rates (group_size, duration_minutes)
+            WHERE is_active = true;
+            """,
+            execute=True,
+        )
 
     async def create_table_calendar_student_links(self):
         await self.execute("""
@@ -440,6 +601,122 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_calendar_links_indexes", exc)
             return
 
+    async def migrate_student_group_member_invites(self):
+        try:
+            for statement in [
+                "ALTER TABLE student_group_members ADD COLUMN IF NOT EXISTS invite_token TEXT UNIQUE;",
+                "ALTER TABLE student_group_members ADD COLUMN IF NOT EXISTS invite_created_at TIMESTAMP;",
+                "ALTER TABLE student_group_members ADD COLUMN IF NOT EXISTS invite_used_at TIMESTAMP;",
+            ]:
+                await self.execute(statement, execute=True)
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_group_member_invites", exc)
+            return
+
+    async def migrate_learning_plan_schema(self):
+        try:
+            learning_plan_columns = [
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS summary TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS parsed_text TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS parser_status TEXT DEFAULT 'ok';",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS parser_warnings TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS file_id TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS file_unique_id TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS file_name TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS mime_type TEXT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS created_by BIGINT;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;",
+                "ALTER TABLE student_learning_plans ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
+            ]
+            checklist_columns = [
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL;",
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'auto';",
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';",
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;",
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;",
+                "ALTER TABLE study_plan_checklist_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
+            ]
+            pricing_columns = [
+                "ALTER TABLE lesson_pricing_rates ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'RUB';",
+                "ALTER TABLE lesson_pricing_rates ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;",
+                "ALTER TABLE lesson_pricing_rates ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
+                "ALTER TABLE lesson_pricing_rates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
+            ]
+            for statement in learning_plan_columns + checklist_columns + pricing_columns:
+                await self.execute(statement, execute=True)
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS student_learning_plans_one_active_idx
+                ON student_learning_plans (student_id)
+                WHERE status = 'active';
+                """,
+                execute=True,
+            )
+            await self.execute(
+                """
+                CREATE INDEX IF NOT EXISTS student_learning_plans_student_status_idx
+                ON student_learning_plans (student_id, status, created_at DESC);
+                """,
+                execute=True,
+            )
+            await self.execute(
+                """
+                CREATE INDEX IF NOT EXISTS study_plan_checklist_student_lesson_idx
+                ON study_plan_checklist_items (student_id, lesson_id, sort_order, id);
+                """,
+                execute=True,
+            )
+            await self.execute(
+                """
+                CREATE INDEX IF NOT EXISTS lesson_pricing_rates_lookup_idx
+                ON lesson_pricing_rates (group_size, duration_minutes)
+                WHERE is_active = true;
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_learning_plan_schema", exc)
+            return
+
+    async def migrate_default_pricing_rate(self):
+        try:
+            existing = await self.execute(
+                """
+                SELECT 1
+                FROM lesson_pricing_rates
+                WHERE group_size = 1 AND duration_minutes = 90
+                """,
+                fetchval=True,
+            )
+            if existing:
+                return
+
+            import re
+
+            from data.config import load_teacher_info
+
+            rate_text = str(load_teacher_info().get("requisites", {}).get("rate") or "")
+            amount_match = re.search(r"(\d[\d\s]*)", rate_text)
+            if not amount_match:
+                return
+            amount = float(amount_match.group(1).replace(" ", ""))
+            duration_match = re.search(r"/\s*(\d{2,3})", rate_text)
+            duration = int(duration_match.group(1)) if duration_match else 90
+            await self.execute(
+                """
+                INSERT INTO lesson_pricing_rates (group_size, duration_minutes, amount, currency)
+                VALUES (1, $1, $2, 'RUB')
+                ON CONFLICT (group_size, duration_minutes) DO NOTHING
+                """,
+                duration,
+                amount,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_default_pricing_rate", exc)
+            return
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -476,6 +753,38 @@ class DatabaseSchemaMixin:
                 "attachment_mime_type",
                 "materials_parsed_at",
             },
+            "homework_delivery_queue": {
+                "homework_id",
+                "student_id",
+                "delivery_kind",
+                "deliver_after",
+                "include_attachment",
+                "last_attempt_at",
+                "attempts",
+                "last_error",
+                "created_at",
+            },
+            "student_groups": {
+                "group_type",
+                "title",
+                "primary_student_id",
+                "balance_mode",
+                "homework_mode",
+                "onboarding_source",
+                "is_active",
+                "created_at",
+            },
+            "student_group_members": {
+                "group_id",
+                "student_id",
+                "member_name",
+                "member_role",
+                "has_bot_access",
+                "invite_token",
+                "invite_created_at",
+                "invite_used_at",
+                "created_at",
+            },
             "homework_material_mentions": {
                 "homework_id",
                 "student_id",
@@ -497,6 +806,41 @@ class DatabaseSchemaMixin:
                 "blocked_by",
                 "blocked_at",
                 "previous_is_active",
+            },
+            "student_learning_plans": {
+                "student_id",
+                "status",
+                "summary",
+                "parsed_text",
+                "parser_status",
+                "parser_warnings",
+                "file_id",
+                "file_unique_id",
+                "file_name",
+                "mime_type",
+                "created_by",
+                "published_at",
+                "archived_at",
+                "created_at",
+            },
+            "study_plan_checklist_items": {
+                "student_id",
+                "lesson_id",
+                "title",
+                "source",
+                "status",
+                "sort_order",
+                "completed_at",
+                "created_at",
+            },
+            "lesson_pricing_rates": {
+                "group_size",
+                "duration_minutes",
+                "amount",
+                "currency",
+                "is_active",
+                "created_at",
+                "updated_at",
             },
         }
 
@@ -527,11 +871,15 @@ class DatabaseSchemaMixin:
     async def create_all_tables(self):
         await self.create_table_users()
         await self.create_table_student_parent()
+        await self.create_table_student_groups()
         await self.create_table_blocked_telegram_ids()
         await self.create_table_lessons()
         await self.create_table_payments()
         await self.create_table_homework()
+        await self.create_table_homework_delivery_queue()
         await self.create_table_homework_material_mentions()
+        await self.create_table_learning_plans()
+        await self.create_table_lesson_pricing_rates()
         await self.create_table_calendar_student_links()
         await self.migrate_lessons_google_event_id()
         await self.migrate_lessons_add_date()
@@ -550,4 +898,7 @@ class DatabaseSchemaMixin:
         await self.migrate_homework_add_attachment_fields()
         await self.migrate_homework_material_mentions_indexes()
         await self.migrate_calendar_links_indexes()
+        await self.migrate_student_group_member_invites()
+        await self.migrate_learning_plan_schema()
+        await self.migrate_default_pricing_rate()
         await self.verify_required_schema()

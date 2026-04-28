@@ -7,6 +7,7 @@ from utils.db_api.homework import DatabaseHomeworkMixin
 from utils.db_api.lessons import DatabaseLessonMixin
 from utils.db_api.payments import DatabasePaymentMixin
 from utils.db_api.schema import DatabaseSchemaMixin
+from utils.db_api.study_plans import DatabaseStudyPlanMixin
 from utils.db_api.users import DatabaseUserMixin
 
 
@@ -14,6 +15,7 @@ class Database(
     DatabaseSchemaMixin,
     DatabaseUserMixin,
     DatabaseHomeworkMixin,
+    DatabaseStudyPlanMixin,
     DatabaseCalendarLinksMixin,
     DatabaseLessonMixin,
     DatabasePaymentMixin,

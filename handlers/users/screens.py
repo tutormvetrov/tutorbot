@@ -23,6 +23,16 @@ from utils.ui_text import (
 )
 
 
+async def _get_student_learning_context(db: Database, student_id: int) -> tuple[int, dict | None]:
+    pair = None
+    get_pair = getattr(db, "get_student_pair_for_student", None)
+    if callable(get_pair):
+        pair = await get_pair(student_id)
+    if pair:
+        return int(pair["primary_student_id"]), pair
+    return student_id, None
+
+
 async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, object]:
     preview = await get_preview_context(db, actor_user_id)
     effective_user_id = preview["target_id"] if preview else actor_user_id
@@ -42,16 +52,18 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
         )
 
     if user.get("role") == "student":
-        lessons = list(await db.get_active_lessons(effective_user_id) or [])
+        learning_user_id, pair = await _get_student_learning_context(db, effective_user_id)
+        lessons = list(await db.get_active_lessons(learning_user_id) or [])
         next_lesson = lessons[0]["lesson_date"] if lessons and lessons[0].get("lesson_date") else None
-        homework = list(await db.get_student_homework(effective_user_id, "active") or [])
-        balance = await db.get_student_lesson_balance(effective_user_id)
+        homework = list(await db.get_student_homework(learning_user_id, "active") or [])
+        balance = await db.get_student_lesson_balance(learning_user_id)
         return apply_preview_to_payload(
             build_student_home_text(
                 user,
                 balance,
                 active_homework_count=len(homework),
                 next_lesson=next_lesson,
+                pair=pair,
             ),
             student_main_keyboard,
             preview,
@@ -75,9 +87,11 @@ async def get_profile_payload(db: Database, actor_user_id: int) -> tuple[str, ob
     balance = 0
     next_lessons = []
     next_lesson = None
+    pair = None
     if user["role"] == "student":
-        balance = await db.get_student_lesson_balance(effective_user_id)
-        next_lessons = await db.get_active_lessons(effective_user_id)
+        learning_user_id, pair = await _get_student_learning_context(db, effective_user_id)
+        balance = await db.get_student_lesson_balance(learning_user_id)
+        next_lessons = await db.get_active_lessons(learning_user_id)
         next_lesson = next_lessons[0]["lesson_date"] if next_lessons and next_lessons[0].get("lesson_date") else None
 
     children = None
@@ -93,6 +107,7 @@ async def get_profile_payload(db: Database, actor_user_id: int) -> tuple[str, ob
         next_lesson=next_lesson,
         reminders=user.get("lesson_reminders"),
         children=children,
+        pair=pair,
     )
     if user["role"] == "student":
         keyboard = profile_keyboard

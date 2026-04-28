@@ -50,6 +50,7 @@ cancel_fsm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 
 role_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🎓 Я ученик", "role:student")],
+    [_btn("👥 Мы занимаемся вдвоём", "role:student_pair")],
     [_btn("👨‍👩‍👧 Я родитель ученика", "role:parent")],
 ])
 
@@ -63,9 +64,10 @@ level_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 student_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("📅 Расписание", "schedule"), _btn("📚 Домашние задания", "homework")],
-    [_btn("❄️ Заморозка", "freeze"), _btn("💰 Оплата", "payment")],
-    [_btn("👤 Профиль", "profile"), _btn("📞 Контакты", "contacts")],
+    [_btn("📌 Учебный план", "study_plan"), _btn("📚 Домашние задания", "homework")],
+    [_btn("📅 Расписание", "schedule"), _btn("💰 Оплата", "payment")],
+    [_btn("❄️ Заморозка", "freeze"), _btn("👤 Профиль", "profile")],
+    [_btn("📞 Контакты", "contacts")],
     [_btn("💳 Реквизиты", "requisites"), _btn("✉️ Написать преподавателю", "reply:general")],
 ])
 
@@ -165,6 +167,7 @@ def make_parent_home_keyboard(children: list[dict]) -> InlineKeyboardMarkup:
 def make_parent_child_keyboard(link_id: int, linked: bool = True) -> InlineKeyboardMarkup:
     rows = []
     if linked:
+        rows.append([_btn("📌 Учебный план", f"parent:child:{link_id}:study_plan")])
         rows.append([
             _btn("📅 Расписание", f"parent:child:{link_id}:schedule"),
             _btn("📚 Домашка", f"parent:child:{link_id}:homework:active"),
@@ -199,7 +202,7 @@ def make_parent_homework_item_keyboard(link_id: int, hw_id: int, status: str, ha
 
 def make_parent_payments_keyboard(link_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("✉️ Сообщить об оплате", "reply:payment")],
+        [_btn("✉️ Сообщить об оплате", "reply:payment"), _btn("💳 Реквизиты", f"parent:child:{link_id}:requisites")],
         [_btn("◀️ К ребёнку", f"parent:child:{link_id}")],
     ])
 
@@ -247,9 +250,9 @@ admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 
 admin_students_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📋 Список учеников", "admin:students"), _btn("👨‍👩‍👧 Родители", "admin:parents")],
-    [_btn("👤 Добавить ученика", "admin:add_student"), _btn("🏫 Формат занятий", "admin:lesson_formats")],
-    [_btn("🗣 Обращение", "admin:speech_styles"), _btn("🗑 Деактивировать", "admin:deactivate_student")],
-    [_btn("💀 Полный сброс", "admin:delete_student")],
+    [_btn("👥 Пары", "admin:pairs"), _btn("👤 Добавить ученика", "admin:add_student")],
+    [_btn("🏫 Формат занятий", "admin:lesson_formats")],
+    [_btn("🗣 Обращение", "admin:speech_styles")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
 
@@ -257,6 +260,7 @@ admin_education_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("➕ Добавить занятие", "admin:add_lesson:education"), _btn("🗑 Удалить занятие", "admin:manage_lessons")],
     [_btn("💳 Добавить оплату", "admin:add_payment:education"), _btn("❄️ Заморозки", "admin:freezes")],
     [_btn("📚 Задать ДЗ", "admin:add_homework:education"), _btn("📋 Активные ДЗ", "admin:all_homework")],
+    [_btn("💳 Тарифы", "admin:pricing")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
 
@@ -276,7 +280,7 @@ admin_service_monitoring_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 
 admin_service_context_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🎨 Тональность бренда", "admin:brand_tone")],
-    [_btn("📝 Сообщения для отладки", "admin:notes")],
+    [_btn("📝 Рабочие заметки", "admin:notes")],
     [_btn("◀️ К сервису", "admin:cat:service")],
 ])
 
@@ -368,11 +372,14 @@ def make_freeze_queue_keyboard(lesson_id: int, page: int, total_pages: int) -> I
 def make_post_registration_keyboard(
     booking_url: str = "",
     website_url: str = "",
+    materials_url: str = "",
     include_level_test: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
     if booking_url:
         rows.append([_url_btn("📅 Записаться на пробный урок", booking_url)])
+    if materials_url:
+        rows.append([_url_btn("📁 Учебные материалы", materials_url)])
     if website_url:
         rows.append([_url_btn("↗️ Сайт и материалы", website_url)])
     if include_level_test:
@@ -443,7 +450,7 @@ def make_admin_students_list_keyboard(
 
     rows = []
     rows.append([
-        _btn("🔎 Поиск по имени", "admin:students:search"),
+        _btn("🔎 Поиск: имя, ID, язык", "admin:students:search"),
         _btn("🧹 Сбросить", "admin:students:reset"),
     ])
     rows.append([
@@ -521,6 +528,7 @@ def make_admin_student_actions_keyboard(telegram_id: int, page: int) -> InlineKe
             _btn("💳 Добавить оплату", f"admin:quick:add_payment:{telegram_id}:{page}:actions"),
         ],
         [_btn("📚 Задать ДЗ", f"admin:quick:add_homework:{telegram_id}:{page}:actions")],
+        [_btn("📌 Учебный план", f"admin:study_plan:{telegram_id}:{page}:actions")],
         [_btn("◀️ К карточке ученика", f"admin:student_card:{telegram_id}:{page}")],
     ])
 
@@ -555,13 +563,116 @@ def make_admin_student_danger_keyboard(telegram_id: int, page: int) -> InlineKey
     ])
 
 
+def make_admin_pairs_list_keyboard(pairs: list) -> InlineKeyboardMarkup:
+    rows = [[_btn("➕ Создать пару", "admin:pairs:add")]]
+    for pair in pairs:
+        label = f"👥 {pair.get('title') or pair.get('primary_student_name') or 'Пара'}"
+        if len(label) > 64:
+            label = label[:62] + "…"
+        rows.append([_btn(label, f"admin:pair:{pair['id']}")])
+    rows.append([_btn("◀️ К разделу «Ученики»", "admin:cat:students")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_pair_primary_keyboard(students: list) -> InlineKeyboardMarkup:
+    rows = []
+    for student in students:
+        label = f"{student['full_name']} · {student['telegram_id']}"
+        if len(label) > 64:
+            label = label[:62] + "…"
+        rows.append([_btn(label, f"admin:pairs:add_primary:{student['telegram_id']}")])
+    rows.append([_btn("◀️ К парам", "admin:pairs")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_pair_card_keyboard(pair: dict) -> InlineKeyboardMarkup:
+    primary_student_id = int(pair["primary_student_id"])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("✉️ Написать", f"admin:write_to_student:{primary_student_id}:0:card"),
+            _btn("💰 Оплаты", f"admin:student_payments:{primary_student_id}:0:card"),
+        ],
+        [
+            _btn("➕ Урок", f"admin:quick:add_lesson:{primary_student_id}:0:card"),
+            _btn("📚 Задать ДЗ", f"admin:quick:add_homework:{primary_student_id}:0:card"),
+        ],
+        [_btn("🔗 Ссылка для второго участника", f"admin:pair_invite:{pair['id']}")],
+        [_btn("📌 Учебный план", f"admin:study_plan:{primary_student_id}:0:card")],
+        [_btn("👤 Основной профиль", f"admin:student_card:{primary_student_id}:0")],
+        [_btn("◀️ К парам", "admin:pairs")],
+    ])
+
+
+def make_admin_pair_notification_keyboard(pair_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("🔗 Ссылка для второго участника", f"admin:pair_invite:{pair_id}")],
+        [_btn("👥 Открыть пару", f"admin:pair:{pair_id}")],
+    ])
+
+
+def make_study_plan_keyboard(plan: dict | None, checklist_items: list, *, parent_link_id: int | None = None) -> InlineKeyboardMarkup:
+    prefix = f"parent:child:{parent_link_id}:study_plan" if parent_link_id is not None else "study_plan"
+    rows = []
+    if plan:
+        rows.append([_btn("📄 Открыть PDF-план", f"{prefix}:file:{plan['id']}")])
+    for item in checklist_items:
+        mark = "✅" if item.get("status") == "done" else "☐"
+        label = f"{mark} {item.get('title') or 'Пункт'}"
+        if len(label) > 64:
+            label = label[:62] + "…"
+        callback = f"study_plan:toggle:{item['id']}" if parent_link_id is None else prefix
+        rows.append([_btn(label, callback)])
+    rows.append([_btn("📚 Домашние задания", "homework" if parent_link_id is None else f"parent:child:{parent_link_id}:homework:active")])
+    rows.append([_btn("◀️ Главное меню", "back_to_menu" if parent_link_id is None else f"parent:child:{parent_link_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_study_plan_open_keyboard(parent_link_id: int | None = None) -> InlineKeyboardMarkup:
+    callback = "study_plan" if parent_link_id is None else f"parent:child:{parent_link_id}:study_plan"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📌 Открыть учебный план", callback)],
+    ])
+
+
+def make_admin_study_plan_keyboard(student_id: int, page: int, source: str, has_plan: bool = False) -> InlineKeyboardMarkup:
+    rows = [[_btn("📄 Загрузить PDF-план", f"admin:study_plan_upload:{student_id}:{page}:{source}")]]
+    if has_plan:
+        rows.append([_btn("➕ Пункт в чек-лист", f"admin:study_plan_item:{student_id}:{page}:{source}")])
+    rows.append([_btn("◀️ К карточке ученика", f"admin:student_card:{student_id}:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_study_plan_preview_keyboard(can_publish: bool = True) -> InlineKeyboardMarkup:
+    rows = []
+    if can_publish:
+        rows.append([_btn("✅ Опубликовать", "admin:study_plan_publish")])
+    rows.append([_btn("✏️ Править выжимку", "admin:study_plan_edit_summary")])
+    rows.append([_btn("🔁 Загрузить другой PDF", "admin:study_plan_upload_again")])
+    rows.append([_btn("❌ Отмена", "cancel_fsm")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_pricing_rates_keyboard(rates: list) -> InlineKeyboardMarkup:
+    rows = [[_btn("➕ Добавить/обновить тариф", "admin:pricing:add")]]
+    for rate in rates:
+        amount = int(rate.get("amount") or 0)
+        rows.append([
+            _btn(
+                f"{rate['group_size']} уч. · {rate['duration_minutes']} мин · {amount} {rate.get('currency') or 'RUB'}",
+                "admin:pricing",
+            )
+        ])
+    rows.append([_btn("◀️ К учебному процессу", "admin:cat:education")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def make_admin_parents_list_keyboard(
     parents: list,
     page: int,
     page_size: int,
     has_query: bool = False,
 ) -> InlineKeyboardMarkup:
-    rows = [[_btn("🔎 Поиск по имени", "admin:parents:search")]]
+    rows = [[_btn("🔎 Поиск: имя или ID", "admin:parents:search")]]
     if has_query:
         rows[0].append(_btn("✖️ Очистить поиск", "admin:parents:search_clear"))
 
@@ -674,6 +785,7 @@ def make_contacts_keyboard(
     vk_call_url: str = "",
     google_meet_url: str = "",
     website_url: str = "",
+    materials_url: str = "",
 ) -> InlineKeyboardMarkup:
     rows = []
     if vk_call_url:
@@ -684,6 +796,8 @@ def make_contacts_keyboard(
         rows.append([_url_btn("📅 Открыть расписание", calendar_url)])
     if booking_url:
         rows.append([_url_btn("📝 Записаться на урок", booking_url)])
+    if materials_url:
+        rows.append([_url_btn("📁 Учебные материалы", materials_url)])
     if website_url:
         rows.append([_url_btn("↗️ Сайт и материалы", website_url)])
     rows.append([_btn("◀️ Главное меню", "back_to_menu")])
@@ -820,6 +934,9 @@ def make_homework_delete_keyboard(items: list) -> InlineKeyboardMarkup:
     for i, hw in enumerate(items, 1):
         deadline_str = hw["deadline"].strftime("%d.%m.%Y") if hw.get("deadline") else "—"
         label = f"📝 {i}. {hw['full_name']} · до {deadline_str}"
+        if hw.get("queued_deliver_after"):
+            delivery_str = hw["queued_deliver_after"].strftime("%H:%M")
+            label += f" · 📨 {delivery_str}"
         if len(label) > 60:
             label = label[:58] + "…"
         rows.append([_btn(label, f"admin:homework_manage:{hw['id']}")])
@@ -827,10 +944,28 @@ def make_homework_delete_keyboard(items: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_homework_manage_actions_keyboard(hw_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def make_homework_manage_actions_keyboard(hw_id: int, *, can_send_now: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [_btn("✏️ Редактировать", f"hw_edit_start:{hw_id}")],
         [_btn("🗑 Удалить", f"hw_delete_confirm:{hw_id}")],
+    ]
+    if can_send_now:
+        rows.insert(1, [_btn("📨 Отправить сейчас", f"hw_send_now:{hw_id}")])
+    rows.append([_btn("◀️ К активным ДЗ", "admin:all_homework")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_homework_delivery_result_keyboard(hw_id: int, back_callback: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📨 Отправить сейчас", f"hw_send_now:{hw_id}")],
+        [_btn("📚 Открыть карточку ДЗ", f"admin:homework_manage:{hw_id}")],
+        [_btn("◀️ Вернуться", back_callback)],
+    ])
+
+
+def make_homework_sent_now_keyboard(hw_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📚 К карточке ДЗ", f"admin:homework_manage:{hw_id}")],
         [_btn("◀️ К активным ДЗ", "admin:all_homework")],
     ])
 

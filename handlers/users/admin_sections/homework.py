@@ -12,20 +12,31 @@ from keyboards.inline import (
     make_back_button_keyboard,
     make_homework_delete_confirm_keyboard,
     make_homework_delete_keyboard,
+    make_homework_delivery_result_keyboard,
     make_homework_edit_content_keyboard,
     make_homework_edit_deadline_keyboard,
     make_homework_manage_actions_keyboard,
+    make_homework_sent_now_keyboard,
     make_teacher_reply_keyboard,
 )
 from states.registration import AdminAddHomework, AdminEditHomework
 from utils.db_api.postgresql import Database
+from utils.homework_delivery import (
+    delivery_status_text,
+    format_delivery_time,
+    is_homework_quiet_hours,
+    next_homework_delivery_slot,
+    send_single_homework_notification,
+)
 from utils.homework_text import homework_body_html
+from utils.time import business_naive_now, business_now
 from utils.ui_text import (
     ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT,
     ADMIN_ADD_HOMEWORK_DEADLINE_INVALID_TEXT,
     ADMIN_ADD_HOMEWORK_DEADLINE_PROMPT_TEXT,
     ADMIN_ADD_HOMEWORK_EMPTY_TEXT,
     ADMIN_NO_REGISTERED_STUDENTS_TEXT,
+    build_action_result_text,
     build_admin_homework_description_prompt,
     build_admin_homework_list_text,
 )
@@ -56,6 +67,10 @@ def _reply_markup_for_return_view(return_view: str | None, student_id: int | Non
                 return make_admin_context_keyboard(student_id, int(parts[3]))
         return make_back_button_keyboard("◀️ Вернуться", return_view)
     return make_back_button_keyboard("◀️ Вернуться", return_view or "admin:home")
+
+
+def _back_callback_for_return_view(return_view: str | None) -> str:
+    return return_view or "admin:home"
 
 
 def _student_return_view(student_id: int, page: int | None, source: str) -> str | None:
@@ -105,8 +120,68 @@ def _build_admin_homework_manage_text(hw: dict, student_name: str) -> str:
         "📚 <b>Управление домашним заданием</b>\n\n"
         f"👤 Ученик: <b>{q(student_name)}</b>\n"
         f"📝 Задание:\n{homework_html}\n"
-        f"📅 Дедлайн: <b>{_deadline_label(hw.get('deadline'))}</b>\n\n"
+        f"📅 Дедлайн: <b>{_deadline_label(hw.get('deadline'))}</b>\n"
+        f"{delivery_status_text(hw)}\n\n"
         "Ниже можно отредактировать или удалить это ДЗ."
+    )
+
+
+async def _send_or_queue_homework_delivery(
+    bot,
+    db: Database,
+    homework_id: int,
+    student_id: int,
+    delivery_kind: str,
+    *,
+    include_attachment: bool = False,
+    force_send: bool = False,
+):
+    now = business_now()
+    if not force_send and is_homework_quiet_hours(now):
+        deliver_after = next_homework_delivery_slot(now)
+        await db.upsert_homework_delivery(
+            homework_id,
+            student_id,
+            delivery_kind,
+            deliver_after,
+            include_attachment=include_attachment,
+        )
+        return {"mode": "queued", "deliver_after": deliver_after}
+
+    homework = await db.get_homework_by_id(homework_id)
+    if not homework:
+        raise RuntimeError("Домашнее задание не найдено.")
+    await send_single_homework_notification(
+        bot,
+        homework,
+        delivery_kind,
+        include_attachment=include_attachment,
+    )
+    await db.clear_homework_delivery(homework_id)
+    return {"mode": "sent", "deliver_after": None}
+
+
+def _build_delivery_result_text(
+    *,
+    title: str,
+    student_name: str,
+    homework_html: str,
+    deadline_label: str,
+    deliver_after: datetime | None = None,
+) -> str:
+    body_lines = [
+        f"👤 Ученик: {student_name}",
+        f"📝 Задание:\n{homework_html}",
+        f"📅 Дедлайн: {deadline_label}",
+    ]
+    next_step = "Карточка ученика и список ДЗ уже обновлены."
+    if deliver_after is not None:
+        body_lines.append(f"📨 Отправка ученику: <b>{format_delivery_time(deliver_after)}</b>")
+        next_step = "Если хотите, можно отправить это ДЗ ученику сразу кнопкой ниже."
+    return build_action_result_text(
+        title,
+        "\n".join(body_lines),
+        next_step=next_step,
     )
 
 
@@ -166,7 +241,10 @@ async def _render_admin_homework_manage(message: types.Message, db: Database, hw
     student_name = q(student["full_name"]) if student else str(hw["student_id"])
     await message.edit_text(
         _build_admin_homework_manage_text(hw, student_name),
-        reply_markup=make_homework_manage_actions_keyboard(hw_id),
+        reply_markup=make_homework_manage_actions_keyboard(
+            hw_id,
+            can_send_now=bool(hw.get("queued_deliver_after")),
+        ),
     )
 
 
@@ -271,6 +349,27 @@ async def _finish_homework_edit(message: types.Message, state: FSMContext, db: D
         (attachment or {}).get("file_name"),
         (attachment or {}).get("mime_type"),
     ) or "—"
+    include_attachment = bool(attachment_changed and attachment and attachment.get("file_id"))
+
+    try:
+        delivery_result = await _send_or_queue_homework_delivery(
+            message.bot,
+            db,
+            data["homework_id"],
+            data["student_id"],
+            "updated",
+            include_attachment=include_attachment,
+        )
+    except Exception as exc:
+        logger.warning("Не удалось обработать доставку обновлённого ДЗ %s: %s", data["homework_id"], exc)
+        delivery_result = {"mode": "queued", "deliver_after": next_homework_delivery_slot(business_now())}
+        await db.upsert_homework_delivery(
+            data["homework_id"],
+            data["student_id"],
+            "updated",
+            delivery_result["deliver_after"],
+            include_attachment=include_attachment,
+        )
 
     await state.clear()
     await restore_admin_view(
@@ -281,29 +380,30 @@ async def _finish_homework_edit(message: types.Message, state: FSMContext, db: D
         data.get("admin_return_view"),
     )
 
-    try:
-        if attachment_changed and attachment and attachment.get("file_id"):
-            await message.bot.send_document(
-                data["student_id"],
-                attachment["file_id"],
-            )
-        await message.bot.send_message(
-            data["student_id"],
-            f"📚 <b>Домашнее задание обновлено!</b>\n\n"
-            f"📝 Задание:\n{homework_html}\n"
-            f"📅 Дедлайн: <b>{deadline_str}</b>",
-            reply_markup=make_teacher_reply_keyboard("homework", data["homework_id"]),
-        )
-    except Exception as exc:
-        logger.warning("Не удалось отправить обновлённое ДЗ ученику %s: %s", data["student_id"], exc)
-
     student_name = q(data.get("student_name") or data["student_id"])
+    if delivery_result["mode"] == "queued":
+        await message.answer(
+            _build_delivery_result_text(
+                title="Обновление запланировано",
+                student_name=student_name,
+                homework_html=homework_html,
+                deadline_label=deadline_str,
+                deliver_after=delivery_result["deliver_after"],
+            ),
+            reply_markup=make_homework_delivery_result_keyboard(
+                data["homework_id"],
+                _back_callback_for_return_view(data.get("admin_return_view")),
+            ),
+        )
+        return
+
     await message.answer(
-        f"✅ <b>Домашнее задание обновлено</b>\n\n"
-        f"👤 Ученик: {student_name}\n"
-        f"📝 Задание:\n{homework_html}\n"
-        f"📅 Дедлайн: {deadline_str}\n\n"
-        "Список активных ДЗ уже обновлён.",
+        _build_delivery_result_text(
+            title="Домашнее задание обновлено",
+            student_name=student_name,
+            homework_html=homework_html,
+            deadline_label=deadline_str,
+        ),
         reply_markup=make_back_button_keyboard("◀️ К активным ДЗ", data.get("admin_return_view") or "admin:all_homework"),
     )
 
@@ -435,32 +535,53 @@ async def admin_hw_deadline_entered(message: types.Message, state: FSMContext, d
         (attachment or {}).get('file_name'),
         (attachment or {}).get('mime_type'),
     ) or "—"
+    include_attachment = bool(attachment and attachment.get("file_id"))
+
+    try:
+        delivery_result = await _send_or_queue_homework_delivery(
+            message.bot,
+            db,
+            homework_id,
+            data["student_id"],
+            "new",
+            include_attachment=include_attachment,
+        )
+    except Exception as exc:
+        logger.warning("Не удалось обработать доставку нового ДЗ %s: %s", homework_id, exc)
+        delivery_result = {"mode": "queued", "deliver_after": next_homework_delivery_slot(business_now())}
+        await db.upsert_homework_delivery(
+            homework_id,
+            data["student_id"],
+            "new",
+            delivery_result["deliver_after"],
+            include_attachment=include_attachment,
+        )
 
     await state.clear()
     await restore_admin_view(message.bot, db, origin_chat_id, origin_message_id, return_view)
-
-    try:
-        if attachment and attachment.get("file_id"):
-            await message.bot.send_document(
-                data['student_id'],
-                attachment["file_id"],
-            )
-        await message.bot.send_message(
-            data['student_id'],
-            f"📚 <b>Новое домашнее задание!</b>\n\n"
-            f"📝 Задание:\n{homework_html}\n"
-            f"📅 Дедлайн: <b>{deadline.strftime('%d.%m.%Y')}</b>",
-            reply_markup=make_teacher_reply_keyboard("homework", homework_id),
+    if delivery_result["mode"] == "queued":
+        await message.answer(
+            _build_delivery_result_text(
+                title="ДЗ сохранено и запланировано",
+                student_name=student_name,
+                homework_html=homework_html,
+                deadline_label=deadline.strftime("%d.%m.%Y"),
+                deliver_after=delivery_result["deliver_after"],
+            ),
+            reply_markup=make_homework_delivery_result_keyboard(
+                homework_id,
+                _back_callback_for_return_view(return_view),
+            ),
         )
-    except Exception as exc:
-        logger.warning("Не удалось отправить ДЗ ученику %s: %s", data['student_id'], exc)
+        return
 
     await message.answer(
-        f"✅ <b>Домашнее задание отправлено</b>\n\n"
-        f"👤 Ученик: {student_name}\n"
-        f"📝 Задание:\n{homework_html}\n"
-        f"📅 Дедлайн: {deadline.strftime('%d.%m.%Y')}\n\n"
-        "Карточка ученика и список ДЗ уже обновлены.",
+        _build_delivery_result_text(
+            title="Домашнее задание отправлено",
+            student_name=student_name,
+            homework_html=homework_html,
+            deadline_label=deadline.strftime("%d.%m.%Y"),
+        ),
         reply_markup=_reply_markup_for_return_view(return_view, data['student_id']),
     )
 
@@ -483,6 +604,65 @@ async def admin_homework_manage(callback_query: types.CallbackQuery, db: Databas
     hw_id = int(callback_query.data.split(':')[2])
     await _render_admin_homework_manage(callback_query.message, db, hw_id)
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith('hw_send_now:'))
+async def admin_homework_send_now(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    hw_id = int(callback_query.data.split(':')[1])
+    hw = await db.get_homework_by_id(hw_id)
+    if not hw:
+        await callback_query.message.edit_text(
+            "⚠️ Домашнее задание не найдено.",
+            reply_markup=make_back_button_keyboard("◀️ К активным ДЗ", "admin:all_homework"),
+        )
+        await callback_query.answer()
+        return
+
+    hw = dict(hw)
+    queue_row = await db.get_homework_delivery(hw_id)
+    if not queue_row:
+        await _render_admin_homework_manage(callback_query.message, db, hw_id)
+        await callback_query.answer("Очередь уже пуста.", show_alert=True)
+        return
+    queue_row = dict(queue_row)
+
+    try:
+        await send_single_homework_notification(
+            callback_query.message.bot,
+            hw,
+            queue_row["delivery_kind"],
+            include_attachment=bool(queue_row["include_attachment"]),
+        )
+        await db.clear_homework_delivery(hw_id)
+    except Exception as exc:
+        logger.warning("Не удалось отправить ДЗ %s вручную: %s", hw_id, exc)
+        await db.mark_homework_delivery_failure(hw_id, business_naive_now(), str(exc))
+        await _render_admin_homework_manage(callback_query.message, db, hw_id)
+        await callback_query.answer("Не удалось отправить уведомление.", show_alert=True)
+        return
+
+    student = await db.get_user(hw["student_id"])
+    student_name = q(student["full_name"]) if student else str(hw["student_id"])
+    homework_html = homework_body_html(
+        hw.get("title"),
+        hw.get("description"),
+        hw.get("attachment_name"),
+        hw.get("attachment_mime_type"),
+    ) or "—"
+    await callback_query.message.edit_text(
+        _build_delivery_result_text(
+            title="Уведомление отправлено сейчас",
+            student_name=student_name,
+            homework_html=homework_html,
+            deadline_label=_deadline_label(hw.get("deadline")),
+        ),
+        reply_markup=make_homework_sent_now_keyboard(hw_id),
+    )
+    await callback_query.answer("Уведомление отправлено.")
 
 
 @router.callback_query(lambda c: c.data.startswith('hw_edit_start:'))

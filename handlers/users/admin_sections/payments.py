@@ -10,8 +10,9 @@ from keyboards.inline import (
     make_back_button_keyboard,
     make_payment_delete_confirm_keyboard,
     make_payment_delete_keyboard,
+    make_pricing_rates_keyboard,
 )
-from states.registration import AdminAddPayment
+from states.registration import AdminAddPayment, AdminPricing
 from utils.db_api.postgresql import Database
 from utils.ui_text import (
     ADMIN_ADD_PAYMENT_AMOUNT_INVALID_TEXT,
@@ -21,6 +22,7 @@ from utils.ui_text import (
     ADMIN_ADD_PAYMENT_START_TEXT,
     ADMIN_NO_REGISTERED_STUDENTS_TEXT,
     build_admin_payments_text,
+    build_pricing_rates_text,
 )
 
 from handlers.users.admin_sections.common import (
@@ -33,6 +35,22 @@ from handlers.users.admin_sections.common import (
 )
 
 router = Router()
+
+
+def _parse_rate_line(text: str) -> tuple[int, int, float, str] | None:
+    parts = (text or "").replace(",", ".").split()
+    if len(parts) < 3:
+        return None
+    try:
+        group_size = int(parts[0])
+        duration = int(parts[1])
+        amount = float(parts[2])
+    except ValueError:
+        return None
+    currency = parts[3].upper() if len(parts) > 3 else "RUB"
+    if group_size <= 0 or duration <= 0 or amount <= 0:
+        return None
+    return group_size, duration, amount, currency
 
 
 def _return_view_from_source(source: str | None) -> str:
@@ -66,6 +84,65 @@ async def _render_admin_payments(message: types.Message, db: Database, student_i
     await message.edit_text(
         build_admin_payments_text(name, balance, payments),
         reply_markup=make_payment_delete_keyboard(student_id, payments, page=page, source=source),
+    )
+
+
+async def _render_pricing_rates(message: types.Message, db: Database):
+    rates = list(await db.get_pricing_rates() or [])
+    await message.edit_text(
+        build_pricing_rates_text(rates),
+        reply_markup=make_pricing_rates_keyboard(rates),
+    )
+
+
+@router.callback_query(lambda c: c.data == "admin:pricing")
+async def admin_pricing(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await _render_pricing_rates(callback_query.message, db)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:pricing:add")
+async def admin_pricing_add_start(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await state.clear()
+    await state.set_state(AdminPricing.waiting_for_rate)
+    await callback_query.message.edit_text(
+        "💳 <b>Добавить или обновить тариф</b>\n\n"
+        "Введите одной строкой:\n"
+        "<code>количество_учеников длительность_минут сумма валюта</code>\n\n"
+        "Например: <code>2 90 5000 RUB</code>\n"
+        "Цена считается за занятие целиком.",
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminPricing.waiting_for_rate))
+async def admin_pricing_rate_entered(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Настройка тарифов доступна только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+    parsed = _parse_rate_line(message.text or "")
+    if not parsed:
+        await message.answer(
+            "⚠️ Не понял тариф. Пример: <code>2 90 5000 RUB</code>",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+    group_size, duration, amount, currency = parsed
+    await db.upsert_pricing_rate(group_size, duration, amount, currency)
+    await state.clear()
+    await message.answer(
+        "✅ <b>Тариф сохранён</b>\n\n"
+        f"Формат: <b>{group_size} уч. · {duration} мин</b>\n"
+        f"Цена за занятие: <b>{int(amount) if amount.is_integer() else amount} {currency}</b>",
+        reply_markup=make_back_button_keyboard("◀️ К тарифам", "admin:pricing"),
     )
 
 

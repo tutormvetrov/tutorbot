@@ -1,6 +1,6 @@
 import logging
 from aiogram import Router, F, html
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 
@@ -13,6 +13,7 @@ from keyboards.inline import (
     parent_main_keyboard,
     level_keyboard,
     cancel_fsm_keyboard,
+    make_admin_pair_notification_keyboard,
     make_post_registration_keyboard,
 )
 from states.registration import Registration
@@ -53,11 +54,103 @@ async def _register_admin(message: Message, db: Database):
     )
 
 
+def _extract_start_payload(message: Message, command: CommandObject | None = None) -> str:
+    if command and command.args:
+        return command.args.strip()
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[0].split("@", 1)[0] == "/start":
+        return parts[1].strip()
+    return ""
+
+
+async def _handle_pair_invite_start(message: Message, db: Database, token: str) -> bool:
+    if not token:
+        await message.answer(
+            "⚠️ Ссылка для подключения к паре неполная. Попросите преподавателя прислать её ещё раз."
+        )
+        return True
+
+    get_invite = getattr(db, "get_student_pair_invite", None)
+    accept_invite = getattr(db, "accept_student_pair_invite", None)
+    if not callable(get_invite) or not callable(accept_invite):
+        await message.answer("⚠️ Подключение второго участника пока недоступно в этой версии бота.")
+        return True
+
+    invite = await get_invite(token)
+    if not invite:
+        await message.answer(
+            "⚠️ Ссылка не найдена или уже недоступна. Попросите преподавателя создать новую ссылку."
+        )
+        return True
+
+    user_id = message.from_user.id
+    if user_id == invite["primary_student_id"]:
+        await message.answer(
+            "ℹ️ Эта ссылка предназначена для второго участника пары. "
+            "Основной контакт уже подключён к общему кабинету."
+        )
+        return True
+
+    if invite["student_id"] and invite["student_id"] != user_id:
+        await message.answer(
+            "⚠️ Эта ссылка уже использована другим Telegram-профилем. "
+            "Попросите преподавателя проверить карточку пары."
+        )
+        return True
+
+    existing_user = await db.get_user(user_id)
+    if existing_user and existing_user.get("role") not in {"student"}:
+        await message.answer(
+            "⚠️ Этот Telegram-профиль уже зарегистрирован в другой роли. "
+            "Попросите преподавателя подключить участника вручную."
+        )
+        return True
+
+    pair = await accept_invite(
+        token,
+        user_id,
+        message.from_user.full_name,
+        message.from_user.username,
+    )
+    if not pair:
+        await message.answer(
+            "⚠️ Не удалось подключить вас к паре. Попросите преподавателя создать новую ссылку."
+        )
+        return True
+
+    if config.ADMIN_ID:
+        try:
+            telegram_label = f"@{message.from_user.username}" if message.from_user.username else html.quote(message.from_user.full_name)
+            pair_id = pair.get("id") if pair else invite["group_id"]
+            await message.bot.send_message(
+                config.ADMIN_ID,
+                f"🔗 <b>Второй участник подключился к паре</b>\n\n"
+                f"👥 {html.quote(pair.get('title') or invite['title'])}\n"
+                f"👤 {html.quote(invite['member_name'])}\n"
+                f"Telegram: {telegram_label}",
+                reply_markup=make_admin_pair_notification_keyboard(int(pair_id)),
+            )
+        except Exception as exc:
+            logger.warning("Не удалось отправить админу уведомление о подключении к паре %s: %s", user_id, exc)
+
+    home_text, home_keyboard = await get_user_home_payload(db, user_id)
+    await message.answer(
+        f"✅ <b>Вы подключены к учебной паре.</b>\n\n{home_text}",
+        reply_markup=home_keyboard,
+    )
+    return True
+
+
 @router.message(CommandStart())
-async def command_start(message: Message, state: FSMContext, db: Database):
+async def command_start(message: Message, state: FSMContext, db: Database, command: CommandObject | None = None):
     await state.clear()
     logger.info(f"Команда /start от {message.from_user.id}")
     user_id = message.from_user.id
+    payload = _extract_start_payload(message, command)
+    if payload.startswith("pair_"):
+        if await _handle_pair_invite_start(message, db, payload.removeprefix("pair_")):
+            return
 
     if user_id == config.ADMIN_ID:
         await _register_admin(message, db)
@@ -82,11 +175,16 @@ async def command_start(message: Message, state: FSMContext, db: Database):
 @router.callback_query(F.data.startswith("role:"))
 async def process_role_choice(callback_query: CallbackQuery, state: FSMContext):
     role = callback_query.data.split(":")[1]
-    total = 5
+    total = 6 if role == "student_pair" else 5
     await state.update_data(role=role, reg_total=total)
     await state.set_state(Registration.waiting_for_full_name)
+    name_hint = (
+        "Введите <b>имя и фамилию основного контактного участника</b>:"
+        if role == "student_pair"
+        else "Введите ваше <b>имя и фамилию</b>:"
+    )
     await callback_query.message.edit_text(
-        "📝 Введите ваше <b>имя и фамилию</b>:\n\n"
+        f"📝 {name_hint}\n\n"
         f"Например: <code>Иван Петров</code>{_progress(1, total)}",
         reply_markup=cancel_fsm_keyboard,
     )
@@ -206,6 +304,21 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     data = await state.get_data()
     full_name = data["full_name"]
     language = data["language"]
+    if data.get("role") == "student_pair":
+        total = data.get("reg_total", 6)
+        level_label = LEVEL_LABELS.get(level, level)
+        await state.update_data(level=level)
+        await state.set_state(Registration.waiting_for_pair_partner_name)
+        await callback_query.message.edit_text(
+            f"✅ Уровень: <b>{html.quote(level_label)}</b>\n\n"
+            "Как зовут второго участника пары?\n\n"
+            "Он может просто присутствовать на уроках: бот всё равно будет вести общий темп, "
+            f"баланс и домашние задания на двоих.{_progress(5, total)}",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        await callback_query.answer()
+        return
+
     user_id = callback_query.from_user.id
     is_internal_account = is_internal_test_account(
         full_name=full_name,
@@ -258,11 +371,12 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         except Exception as exc:
             logger.warning("Не удалось отправить админу уведомление о новом ученике %s: %s", user_id, exc)
 
-    from handlers.users.callbacks import _build_contacts_text
+    from handlers.users.callbacks import _build_contacts_text, _get_materials_url
     info = load_teacher_info()
     contacts_text = _build_contacts_text(info, show_address=True)
     booking_url = info.get("contacts", {}).get("booking_url", "")
     website_url = info.get("contacts", {}).get("project_site_url", "")
+    materials_url = _get_materials_url(info)
 
     await callback_query.message.edit_text(
         f"✅ <b>Регистрация завершена!</b>\n\n"
@@ -273,10 +387,121 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         reply_markup=make_post_registration_keyboard(
             booking_url,
             website_url,
+            materials_url,
             include_level_test=True,
         ),
     )
     await callback_query.answer()
+
+
+@router.message(StateFilter(Registration.waiting_for_pair_partner_name))
+async def process_pair_partner_name(message: Message, state: FSMContext, db: Database):
+    partner_name = (message.text or "").strip()
+    if len(partner_name) < 2:
+        await message.answer(
+            "⚠️ Введите имя второго участника пары.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        return
+
+    data = await state.get_data()
+    full_name = data["full_name"]
+    language = data["language"]
+    level = data["level"]
+    user_id = message.from_user.id
+    is_internal_account = is_internal_test_account(
+        full_name=full_name,
+        username=message.from_user.username or "",
+        telegram_id=user_id,
+    )
+
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (telegram_id, full_name, username, role, age, language, level, is_internal_account)
+            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7)
+            ON CONFLICT (telegram_id) DO UPDATE
+            SET full_name = EXCLUDED.full_name,
+                username = EXCLUDED.username,
+                role = EXCLUDED.role,
+                age = EXCLUDED.age,
+                language = EXCLUDED.language,
+                level = EXCLUDED.level,
+                is_internal_account = EXCLUDED.is_internal_account,
+                is_active = true
+            """,
+            user_id,
+            full_name,
+            message.from_user.username,
+            data.get("age"),
+            language,
+            level,
+            is_internal_account,
+        )
+
+    pair_id = None
+    create_pair = getattr(db, "create_student_pair", None)
+    if callable(create_pair):
+        pair_id = await create_pair(
+            user_id,
+            full_name,
+            partner_name,
+            onboarding_source="self_registration",
+        )
+
+    sync_parent_links = getattr(db, "sync_parent_links_for_student", None)
+    if callable(sync_parent_links):
+        await sync_parent_links(user_id, full_name)
+
+    await state.clear()
+    level_label = LEVEL_LABELS.get(level, level)
+    safe_full_name = html.quote(full_name)
+    safe_partner_name = html.quote(partner_name)
+    safe_language = html.quote(language)
+    safe_level_label = html.quote(level_label)
+
+    if config.ADMIN_ID:
+        try:
+            next_step = (
+                "Нажмите кнопку ниже, чтобы создать ссылку для второго участника."
+                if pair_id
+                else "Откройте раздел «Пары», чтобы создать ссылку для второго участника."
+            )
+            await message.bot.send_message(
+                config.ADMIN_ID,
+                f"🎉 <b>Новая учебная пара!</b>\n\n"
+                f"👥 {safe_full_name} + {safe_partner_name}\n"
+                f"🎂 Возраст основного контакта: {data.get('age')} лет\n"
+                f"📚 Язык: {safe_language}  •  📊 Уровень: {safe_level_label}\n"
+                f"🧭 Основной контакт: {safe_full_name}\n\n"
+                f"{next_step}",
+                reply_markup=make_admin_pair_notification_keyboard(int(pair_id)) if pair_id else None,
+            )
+        except Exception as exc:
+            logger.warning("Не удалось отправить админу уведомление о новой паре %s: %s", user_id, exc)
+
+    from handlers.users.callbacks import _build_contacts_text, _get_materials_url
+    info = load_teacher_info()
+    contacts_text = _build_contacts_text(info, show_address=True)
+    booking_url = info.get("contacts", {}).get("booking_url", "")
+    website_url = info.get("contacts", {}).get("project_site_url", "")
+    materials_url = _get_materials_url(info)
+
+    await message.answer(
+        f"✅ <b>Регистрация пары завершена!</b>\n\n"
+        f"👥 {safe_full_name} + {safe_partner_name}\n"
+        f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
+        "Бот будет вести вас как одну учебную пару: общий баланс, один темп и одно ДЗ на двоих."
+        "\n\n"
+        f"{contacts_text}\n\n"
+        "Если готовы, ниже есть тест уровня для стартовой диагностики.",
+        reply_markup=make_post_registration_keyboard(
+            booking_url,
+            website_url,
+            materials_url,
+            include_level_test=True,
+        ),
+    )
 
 
 # ─── Parent: child info ────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +191,15 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.calls = []
                 self.backfill_calls = []
+                self.homework = {
+                    "id": 777,
+                    "student_id": 555,
+                    "title": "",
+                    "description": "Сделайте <a href=\"https://example.com\">упражнение</a> и пришлите результат.",
+                    "attachment_name": None,
+                    "attachment_mime_type": None,
+                    "deadline": datetime(2026, 4, 5),
+                }
 
             async def get_user(self, telegram_id):
                 return {
@@ -229,6 +239,15 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
                 self.calls.append((student_id, title, description, deadline, attachment))
                 return 777
 
+            async def get_homework_by_id(self, hw_id):
+                return self.homework if hw_id == 777 else None
+
+            async def clear_homework_delivery(self, homework_id):
+                return None
+
+            async def upsert_homework_delivery(self, homework_id, student_id, delivery_kind, deliver_after, include_attachment=False):
+                return None
+
         bot = DummyBot()
         message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot, chat_id=901, message_id=78)
         callback = DummyCallbackQuery(
@@ -254,7 +273,8 @@ class AdminQuickFlowTest(unittest.IsolatedAsyncioTestCase):
         hw_message.html_text = hw_message.text
         await admin_hw_description_entered(hw_message, state)
         deadline_message = DummyMessage("05/04/2026", user_id=config.ADMIN_ID, bot=bot)
-        await admin_hw_deadline_entered(deadline_message, state, db)
+        with patch("handlers.users.admin_sections.homework.business_now", return_value=datetime(2026, 4, 5, 12, 0)):
+            await admin_hw_deadline_entered(deadline_message, state, db)
 
         self.assertEqual(db.calls[0][0], 555)
         self.assertEqual(db.calls[0][3].strftime("%d.%m.%Y"), "05.04.2026")

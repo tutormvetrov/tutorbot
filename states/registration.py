@@ -7,6 +7,7 @@ class Registration(StatesGroup):
     waiting_for_age = State()
     waiting_for_language = State()
     waiting_for_level = State()
+    waiting_for_pair_partner_name = State()
     waiting_for_child_name = State()
     waiting_for_child_age = State()
     waiting_for_student_info = State()
@@ -27,9 +28,17 @@ class AdminAddPayment(StatesGroup):
     waiting_for_payment_count = State()
 
 
+class AdminPricing(StatesGroup):
+    waiting_for_rate = State()
+
+
 class AdminAddStudent(StatesGroup):
     waiting_for_name = State()
     waiting_for_telegram_id = State()
+
+
+class AdminCreatePair(StatesGroup):
+    waiting_for_partner_name = State()
 
 
 class AdminBroadcast(StatesGroup):
@@ -79,6 +88,12 @@ class AdminLessonFollowup(StatesGroup):
     waiting_for_lesson_comment = State()
     waiting_for_lesson_bookmark = State()
     waiting_for_lesson_duration = State()
+
+
+class AdminStudyPlan(StatesGroup):
+    waiting_for_pdf = State()
+    waiting_for_summary = State()
+    waiting_for_checklist_item = State()
 
 
 class StudentReply(StatesGroup):

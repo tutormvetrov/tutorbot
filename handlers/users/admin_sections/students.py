@@ -17,6 +17,9 @@ from keyboards.inline import (
     cancel_fsm_keyboard,
     make_back_button_keyboard,
     make_admin_lesson_formats_keyboard,
+    make_admin_pair_card_keyboard,
+    make_admin_pair_primary_keyboard,
+    make_admin_pairs_list_keyboard,
     make_admin_speech_styles_keyboard,
     make_admin_student_actions_keyboard,
     make_admin_student_card_keyboard,
@@ -34,6 +37,7 @@ from keyboards.inline import (
 )
 from states.registration import (
     AdminAddStudent,
+    AdminCreatePair,
     AdminLessonFollowup,
     AdminManageStudent,
     AdminStudentsDirectory,
@@ -47,6 +51,8 @@ from utils.ui_text import (
     ADMIN_SPEECH_STYLES_EMPTY_TEXT,
     ADMIN_STUDENTS_EMPTY_TEXT,
     build_action_result_text,
+    build_admin_pair_card_text,
+    build_admin_pairs_page_text,
     build_admin_students_page_text,
     build_admin_student_card_text,
     format_datetime,
@@ -241,9 +247,13 @@ async def _render_admin_student_card(message: types.Message, db: Database, stude
     balance = await db.get_student_lesson_balance(student_id)
     next_lessons = await db.get_active_lessons(student_id)
     next_lesson = next_lessons[0]["lesson_date"] if next_lessons and next_lessons[0].get("lesson_date") else None
+    pair = None
+    get_pair = getattr(db, "get_student_pair_for_student", None)
+    if callable(get_pair):
+        pair = await get_pair(student_id)
 
     await message.edit_text(
-        build_admin_student_card_text(student, balance, next_lesson),
+        build_admin_student_card_text(student, balance, next_lesson, pair=pair),
         reply_markup=make_admin_student_card_keyboard(student_id, page),
     )
 
@@ -367,6 +377,31 @@ async def _render_admin_speech_styles(message: types.Message, db: Database):
     await message.edit_text(
         "\n".join(lines),
         reply_markup=make_admin_speech_styles_keyboard(students),
+    )
+
+
+async def _render_admin_pairs_page(message: types.Message, db: Database):
+    get_pairs = getattr(db, "get_student_pairs_overview", None)
+    pairs = list(await get_pairs() or []) if callable(get_pairs) else []
+    await message.edit_text(
+        build_admin_pairs_page_text(pairs),
+        reply_markup=make_admin_pairs_list_keyboard(pairs),
+    )
+
+
+async def _render_admin_pair_card(message: types.Message, db: Database, pair_id: int):
+    get_pair = getattr(db, "get_student_pair", None)
+    pair = await get_pair(pair_id) if callable(get_pair) else None
+    if not pair:
+        await message.edit_text(
+            "⚠️ Пара не найдена или уже деактивирована.",
+            reply_markup=back_to_admin_keyboard,
+        )
+        return
+
+    await message.edit_text(
+        build_admin_pair_card_text(pair),
+        reply_markup=make_admin_pair_card_keyboard(pair),
     )
 
 
@@ -545,6 +580,179 @@ async def admin_students_search_submit(message: types.Message, state: FSMContext
 
     target = MessageEditor(message.bot, origin_chat_id, origin_message_id)
     await _render_admin_students_page(target, db, page=0, state=state)
+
+
+@router.callback_query(lambda c: c.data == "admin:pairs")
+async def admin_pairs(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await _render_admin_pairs_page(callback_query.message, db)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:pairs:add")
+async def admin_pair_create_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    students = list(await db.get_all_students() or [])
+    if not students:
+        await callback_query.message.edit_text(
+            ADMIN_NO_ACTIVE_STUDENTS_TEXT,
+            reply_markup=back_to_admin_keyboard,
+        )
+        await callback_query.answer()
+        return
+
+    await state.clear()
+    await callback_query.message.edit_text(
+        "\n".join([
+            "👥 <b>Создать учебную пару</b>",
+            "",
+            "Сначала выберите основного контактного ученика.",
+            "Через него будут идти общий баланс, расписание и домашние задания.",
+        ]),
+        reply_markup=make_admin_pair_primary_keyboard(students),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:pairs:add_primary:"))
+async def admin_pair_create_primary_selected(
+    callback_query: types.CallbackQuery,
+    state: FSMContext,
+    db: Database,
+):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    primary_student_id = int(callback_query.data.split(":")[3])
+    student = await db.get_user(primary_student_id)
+    if not student or student.get("role") != "student" or student.get("is_active") is False:
+        await callback_query.answer("Ученик не найден.", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(
+        pair_primary_student_id=primary_student_id,
+        pair_primary_student_name=student["full_name"],
+    )
+    await state.set_state(AdminCreatePair.waiting_for_partner_name)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "👥 <b>Создать учебную пару</b>",
+            "",
+            f"Основной контакт: <b>{q(student['full_name'])}</b>",
+            "",
+            "Введите имя второго участника пары.",
+            "Если у него нет Telegram-профиля в боте, это нормально.",
+        ]),
+        reply_markup=make_back_button_keyboard("◀️ К парам", "admin:pairs"),
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminCreatePair.waiting_for_partner_name))
+async def admin_pair_create_partner_entered(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer("⚠️ Создание пары доступно только администратору.", reply_markup=back_to_admin_keyboard)
+        return
+
+    partner_name = (message.text or "").strip()
+    if len(partner_name) < 2:
+        await message.answer(
+            "⚠️ Введите имя второго участника пары.",
+            reply_markup=make_back_button_keyboard("◀️ К парам", "admin:pairs"),
+        )
+        return
+
+    data = await state.get_data()
+    primary_student_id = int(data["pair_primary_student_id"])
+    primary_student_name = data["pair_primary_student_name"]
+    create_pair = getattr(db, "create_student_pair", None)
+    if not callable(create_pair):
+        await state.clear()
+        await message.answer("⚠️ В этой версии БД пары недоступны.", reply_markup=back_to_admin_keyboard)
+        return
+
+    pair_id = await create_pair(
+        primary_student_id,
+        primary_student_name,
+        partner_name,
+        onboarding_source="admin",
+    )
+    pair = await db.get_student_pair(pair_id)
+    await state.clear()
+    await message.answer(
+        build_action_result_text(
+            "Учебная пара создана",
+            f"👥 <b>{q(primary_student_name)}</b> + <b>{q(partner_name)}</b>\n"
+            "Баланс, темп и домашние задания будут вестись общими через основной профиль.",
+            next_step="Пара уже появилась в разделе «Пары».",
+        ),
+        reply_markup=make_admin_pair_card_keyboard(pair),
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:pair_invite:"))
+async def admin_pair_invite_link(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    pair_id = int(callback_query.data.split(":")[2])
+    ensure_invite = getattr(db, "ensure_student_pair_invite", None)
+    if not callable(ensure_invite):
+        await callback_query.answer("В этой версии БД ссылки для пары недоступны.", show_alert=True)
+        return
+
+    invite = await ensure_invite(pair_id)
+    if not invite:
+        await callback_query.message.edit_text(
+            "⚠️ Не нашёл второго участника в этой паре.",
+            reply_markup=back_to_admin_keyboard,
+        )
+        await callback_query.answer()
+        return
+
+    payload = f"pair_{invite['invite_token']}"
+    try:
+        bot_me = await callback_query.bot.get_me()
+        bot_username = getattr(bot_me, "username", None)
+    except Exception:
+        bot_username = None
+    invite_entry = f"https://t.me/{bot_username}?start={payload}" if bot_username else f"/start {payload}"
+
+    pair = await db.get_student_pair(pair_id)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "🔗 <b>Ссылка для второго участника</b>",
+            "",
+            f"Пара: <b>{q(invite['title'])}</b>",
+            f"Кого подключаем: <b>{q(invite['member_name'])}</b>",
+            "",
+            f"<code>{invite_entry}</code>",
+            "",
+            "Отправьте эту ссылку второму участнику. После открытия бот привяжет его Telegram к паре, "
+            "а баланс, расписание и ДЗ останутся общими через основной профиль.",
+        ]),
+        reply_markup=make_admin_pair_card_keyboard(pair) if pair else back_to_admin_keyboard,
+    )
+    await callback_query.answer("Ссылка готова.")
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:pair:"))
+async def admin_pair_card(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    pair_id = int(callback_query.data.split(":")[2])
+    await _render_admin_pair_card(callback_query.message, db, pair_id)
+    await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:student_card:"))

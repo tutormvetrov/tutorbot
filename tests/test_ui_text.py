@@ -24,6 +24,7 @@ from utils.ui_text import (
     build_homework_text,
     build_schedule_text,
     build_requisites_text,
+    build_study_plan_text,
     build_teacher_bookmark_reminder_text,
     build_teacher_lesson_followup_text,
     student_freshness_label,
@@ -62,6 +63,50 @@ class UITextTest(unittest.TestCase):
         self.assertIn("Сообщить об оплате", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+
+    def test_requisites_text_uses_exact_pricing_context(self):
+        text = build_requisites_text(
+            {"rate": "3000 ₽ / 60 минут", "card": "1234"},
+            {
+                "group_size": 2,
+                "duration_minutes": 90,
+                "rate": {"amount": 5000, "currency": "RUB", "group_size": 2, "duration_minutes": 90},
+            },
+        )
+
+        self.assertIn("5000 ₽ / 90 минут", text)
+        self.assertIn("Формат: <b>2 уч.</b>", text)
+        self.assertNotIn("3000 ₽ / 60 минут", text)
+
+    def test_requisites_text_avoids_wrong_price_when_no_exact_rate(self):
+        text = build_requisites_text(
+            {"rate": "3000 ₽ / 60 минут", "card": "1234"},
+            {"group_size": 3, "duration_minutes": 75, "rate": None},
+        )
+
+        self.assertIn("Для формата <b>3 уч. · 75 мин</b> стоимость уточните у преподавателя.", text)
+        self.assertNotIn("3000 ₽ / 60 минут", text)
+
+    def test_study_plan_text_shows_plan_checklist_and_progress(self):
+        text = build_study_plan_text(
+            {"full_name": "Анна Иванова"},
+            {"summary": "• Повторяем времена\n• Готовим устную практику"},
+            {"lesson_date": datetime(2026, 4, 8, 16, 0)},
+            [{"id": 1}],
+            [
+                {"title": "Открыть активное ДЗ", "status": "done"},
+                {"title": "Подготовить вопрос", "status": "pending"},
+            ],
+            pair={"title": "Анна + Полина"},
+        )
+
+        self.assertIn("Учебный план", text)
+        self.assertIn("Анна Иванова", text)
+        self.assertIn("Пара: <b>Анна + Полина</b>", text)
+        self.assertIn("Ближайший урок: <b>08.04.2026 16:00</b>", text)
+        self.assertIn("Подготовка: <b>1/2</b>", text)
+        self.assertIn("✅ Открыть активное ДЗ", text)
+        self.assertIn("☐ Подготовить вопрос", text)
 
     def test_action_result_text_keeps_warm_service_structure(self):
         text = build_action_result_text(

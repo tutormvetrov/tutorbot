@@ -12,9 +12,14 @@ from keyboards.inline import (
     make_back_button_keyboard,
     make_lesson_presence_keyboard,
     make_lesson_followup_keyboard,
+    make_study_plan_open_keyboard,
     make_teacher_reply_keyboard,
 )
 from utils.brand import choose_tone_variant
+from utils.homework_delivery import (
+    send_batched_homework_notification,
+    send_single_homework_notification,
+)
 from utils.homework_text import homework_body_html
 from utils.observability import update_job_status, update_ops_status, write_runtime_event
 from utils.reschedule import encode_reschedule_slot, find_next_free_reschedule_slots, format_reschedule_slot_label
@@ -24,6 +29,7 @@ from utils.ui_text import (
     build_parent_weekly_digest_text,
     build_teacher_bookmark_reminder_text,
     build_teacher_lesson_followup_text,
+    build_weekly_study_plan_text,
 )
 
 if TYPE_CHECKING:
@@ -163,6 +169,79 @@ async def homework_reminder_job(bot, db: "Database"):
             logger.warning(f"Ошибка напоминания ДЗ #{hw['id']}: {e}")
     update_job_status("homework_reminder", "ok", sent=len(items))
     write_runtime_event("homework_reminder", "ok", sent=len(items))
+
+
+async def queued_homework_delivery_job(bot, db: "Database"):
+    now = business_naive_now()
+    retry_before = now - timedelta(minutes=30)
+    rows = [dict(row) for row in (await db.get_due_homework_deliveries(now, retry_before) or [])]
+    due_items = len(rows)
+    if not rows:
+        update_job_status(
+            "queued_homework_delivery",
+            "ok",
+            sent_students=0,
+            sent_items=0,
+            failed_items=0,
+            due_items=0,
+        )
+        write_runtime_event(
+            "queued_homework_delivery",
+            "ok",
+            sent_students=0,
+            sent_items=0,
+            failed_items=0,
+            due_items=0,
+        )
+        return
+
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["student_id"], []).append(row)
+
+    sent_students = 0
+    sent_items = 0
+    failed_items = 0
+
+    for student_id, items in grouped.items():
+        try:
+            if len(items) == 1:
+                item = items[0]
+                await send_single_homework_notification(
+                    bot,
+                    item,
+                    item["delivery_kind"],
+                    include_attachment=bool(item.get("include_attachment")),
+                )
+            else:
+                await send_batched_homework_notification(bot, student_id, items)
+            for item in items:
+                await db.clear_homework_delivery(item["id"])
+            sent_students += 1
+            sent_items += len(items)
+        except Exception as exc:
+            logger.warning("Ошибка отложенной доставки ДЗ для ученика %s: %s", student_id, exc)
+            for item in items:
+                await db.mark_homework_delivery_failure(item["id"], now, str(exc))
+            failed_items += len(items)
+
+    status = "ok" if failed_items == 0 else "degraded"
+    update_job_status(
+        "queued_homework_delivery",
+        status,
+        sent_students=sent_students,
+        sent_items=sent_items,
+        failed_items=failed_items,
+        due_items=due_items,
+    )
+    write_runtime_event(
+        "queued_homework_delivery",
+        status,
+        sent_students=sent_students,
+        sent_items=sent_items,
+        failed_items=failed_items,
+        due_items=due_items,
+    )
 
 
 async def homework_gap_check_job(bot, db: "Database"):
@@ -447,6 +526,54 @@ async def parent_weekly_digest_job(bot, db: "Database"):
     write_runtime_event("parent_weekly_digest", "ok", sent=sent_count, checked=len(grouped))
 
 
+async def study_plan_weekly_digest_job(bot, db: "Database"):
+    student_rows = list(await db.get_learning_plan_weekly_student_rows() or [])
+    parent_rows = list(await db.get_learning_plan_parent_digest_rows() or [])
+
+    sent_students = 0
+    for row in student_rows:
+        recipients = await db.get_study_plan_recipients(row["student_id"])
+        for recipient_id in recipients:
+            try:
+                await bot.send_message(
+                    recipient_id,
+                    build_weekly_study_plan_text(row),
+                    reply_markup=make_study_plan_open_keyboard(),
+                )
+                sent_students += 1
+            except Exception as exc:
+                logger.warning("Не удалось отправить weekly study plan ученику %s: %s", recipient_id, exc)
+
+    sent_parents = 0
+    for row in parent_rows:
+        try:
+            await bot.send_message(
+                row["parent_id"],
+                build_weekly_study_plan_text(row, for_parent=True),
+                reply_markup=make_study_plan_open_keyboard(parent_link_id=row["link_id"]),
+            )
+            sent_parents += 1
+        except Exception as exc:
+            logger.warning("Не удалось отправить weekly study plan родителю %s: %s", row["parent_id"], exc)
+
+    update_job_status(
+        "study_plan_weekly_digest",
+        "ok",
+        sent_students=sent_students,
+        sent_parents=sent_parents,
+        checked_students=len(student_rows),
+        checked_parents=len(parent_rows),
+    )
+    write_runtime_event(
+        "study_plan_weekly_digest",
+        "ok",
+        sent_students=sent_students,
+        sent_parents=sent_parents,
+        checked_students=len(student_rows),
+        checked_parents=len(parent_rows),
+    )
+
+
 def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=config.TUTORBOT_TIMEZONE)
     scheduler.add_job(
@@ -485,6 +612,13 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         name="Напоминание о ДЗ с дедлайном завтра",
     )
     scheduler.add_job(
+        queued_homework_delivery_job,
+        CronTrigger(minute="*/5"),
+        args=[bot, db],
+        id="queued_homework_delivery",
+        name="Отложенная отправка домашки",
+    )
+    scheduler.add_job(
         homework_gap_check_job,
         CronTrigger(minute=15),
         args=[bot, db],
@@ -518,6 +652,13 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="parent_weekly_digest",
         name="Еженедельная сводка для родителей",
+    )
+    scheduler.add_job(
+        study_plan_weekly_digest_job,
+        CronTrigger(day_of_week="sun", hour=19, minute=0),
+        args=[bot, db],
+        id="study_plan_weekly_digest",
+        name="Еженедельный обзор учебного плана",
     )
     scheduler.add_job(
         calendar_sync_job,
