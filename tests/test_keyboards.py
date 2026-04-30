@@ -34,10 +34,12 @@ from keyboards.inline import (
     make_study_plan_keyboard,
     make_teacher_reply_keyboard,
     parent_main_keyboard,
+    parent_more_keyboard,
     parent_profile_keyboard,
     payment_keyboard,
     profile_keyboard,
     student_main_keyboard,
+    student_more_keyboard,
 )
 
 
@@ -46,17 +48,69 @@ class KeyboardHelpersTest(unittest.TestCase):
         texts = [button.text for row in student_main_keyboard.inline_keyboard for button in row]
         callbacks = [button.callback_data for row in student_main_keyboard.inline_keyboard for button in row if button.callback_data]
 
-        # Schedule must be on the very first row — the user reported it was hard
-        # to find when it was buried two rows down or behind Contacts.
         self.assertEqual(student_main_keyboard.inline_keyboard[0][0].text, "📅 Расписание")
+        self.assertEqual(len(student_main_keyboard.inline_keyboard), 5)
         self.assertIn("schedule", callbacks)
         self.assertIn("study_plan", callbacks)
         self.assertIn("homework", callbacks)
         self.assertIn("materials", callbacks)
-        # The Requisites button is reached via Payment → Requisites, not from
-        # the main menu, so it must not appear at the top level.
+        self.assertIn("reply:general", callbacks)
+        self.assertIn("more", callbacks)
         self.assertNotIn("requisites", callbacks)
         self.assertNotIn("💳 Реквизиты", texts)
+
+    def test_student_main_menu_drops_freeze_and_profile(self):
+        texts = [button.text for row in student_main_keyboard.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in student_main_keyboard.inline_keyboard for button in row if button.callback_data]
+
+        self.assertNotIn("❄️ Заморозка", texts)
+        self.assertNotIn("👤 Профиль", texts)
+        self.assertNotIn("freeze", callbacks)
+        self.assertNotIn("profile", callbacks)
+        self.assertIn("👤 Ещё", texts)
+
+    def test_student_more_keyboard_contains_all_nested_actions(self):
+        texts = [button.text for row in student_more_keyboard.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in student_more_keyboard.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("👤 Профиль", texts)
+        self.assertIn("🔔 Управление уведомлениями", texts)
+        self.assertIn("🧪 Тест уровня", texts)
+        self.assertIn("❄️ Заморозка", texts)
+        self.assertIn("🛡 Опасные действия", texts)
+        self.assertIn("◀️ Главное меню", texts)
+        self.assertIn("profile", callbacks)
+        self.assertIn("notif:manage", callbacks)
+        self.assertIn("level_test:now", callbacks)
+        self.assertIn("freeze", callbacks)
+        self.assertIn("profile:danger", callbacks)
+        self.assertIn("back_to_menu", callbacks)
+
+    def test_parent_main_menu_drops_profile_and_adds_more(self):
+        callbacks = [button.callback_data for row in parent_main_keyboard.inline_keyboard for button in row if button.callback_data]
+        texts = [button.text for row in parent_main_keyboard.inline_keyboard for button in row]
+
+        self.assertIn("parent:home", callbacks)
+        self.assertIn("materials", callbacks)
+        self.assertIn("contacts", callbacks)
+        self.assertIn("reply:general", callbacks)
+        self.assertIn("more", callbacks)
+        self.assertNotIn("requisites", callbacks)
+        self.assertNotIn("💳 Реквизиты", texts)
+        self.assertNotIn("👤 Профиль", texts)
+        self.assertNotIn("profile", callbacks)
+        self.assertIn("👤 Ещё", texts)
+
+    def test_parent_more_keyboard_contains_profile_and_danger(self):
+        texts = [button.text for row in parent_more_keyboard.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in parent_more_keyboard.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("👤 Профиль родителя", texts)
+        self.assertIn("🛡 Опасные действия", texts)
+        self.assertIn("◀️ Главное меню", texts)
+        self.assertIn("profile", callbacks)
+        self.assertIn("profile:danger", callbacks)
+        self.assertIn("back_to_menu", callbacks)
 
     def test_parent_main_menu_drops_duplicate_requisites(self):
         callbacks = [button.callback_data for row in parent_main_keyboard.inline_keyboard for button in row if button.callback_data]

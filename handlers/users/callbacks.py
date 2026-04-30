@@ -18,7 +18,7 @@ from keyboards.inline import (
     make_parent_payments_keyboard, make_level_test_link_keyboard, make_profile_danger_keyboard,
     make_schedule_keyboard, make_self_delete_confirm_keyboard, make_self_delete_review_keyboard,
     make_teacher_reply_keyboard, make_write_to_student_keyboard, make_back_button_keyboard,
-    make_study_plan_keyboard,
+    make_study_plan_keyboard, student_more_keyboard, parent_more_keyboard,
 )
 from states.registration import FreezeConfirm, StudentReply
 from utils.db_api.postgresql import Database
@@ -45,6 +45,7 @@ from utils.ui_text import (
     build_freeze_success_text,
     build_homework_text,
     build_materials_text,
+    build_more_screen_text,
     build_notifications_text,
     build_parent_child_hub_text,
     build_payment_text,
@@ -1426,4 +1427,23 @@ async def process_notif_action(callback_query: types.CallbackQuery, db: Database
         return
 
     await _render_notifications_screen(callback_query.message, db, user_id)
+    await callback_query.answer()
+
+
+# ─── «Ещё» drawer ────────────────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data == 'more')
+async def process_more(callback_query: types.CallbackQuery, db: Database):
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    if not user or user.get("role") not in {"student", "parent"}:
+        await callback_query.answer()
+        return
+    role = user["role"]
+    keyboard = student_more_keyboard if role == "student" else parent_more_keyboard
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_more_screen_text(role),
+        keyboard,
+        preview,
+    )
     await callback_query.answer()

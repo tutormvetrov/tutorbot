@@ -64,17 +64,33 @@ level_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 student_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("📅 Расписание", "schedule"), _btn("📚 Домашние задания", "homework")],
+    [_btn("📅 Расписание", "schedule"), _btn("📚 Домашка", "homework")],
     [_btn("📌 Учебный план", "study_plan"), _btn("💰 Оплата", "payment")],
-    [_btn("📁 Материалы", "materials"), _btn("📞 Контакты", "contacts")],
-    [_btn("❄️ Заморозка", "freeze"), _btn("👤 Профиль", "profile")],
     [_btn("✉️ Написать преподавателю", "reply:general")],
+    [_btn("📁 Материалы", "materials"), _btn("📞 Контакты", "contacts")],
+    [_btn("👤 Ещё", "more")],
 ])
 
 parent_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👨‍👩‍👧 Мои дети", "parent:home")],
+    [_btn("✉️ Написать преподавателю", "reply:general")],
     [_btn("📁 Материалы", "materials"), _btn("📞 Контакты", "contacts")],
-    [_btn("👤 Профиль", "profile"), _btn("✉️ Написать преподавателю", "reply:general")],
+    [_btn("👤 Ещё", "more")],
+])
+
+student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("👤 Профиль", "profile")],
+    [_btn("🔔 Управление уведомлениями", "notif:manage")],
+    [_btn("🧪 Тест уровня", "level_test:now")],
+    [_btn("❄️ Заморозка", "freeze")],
+    [_btn("🛡 Опасные действия", "profile:danger")],
+    [_btn("◀️ Главное меню", "back_to_menu")],
+])
+
+parent_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("👤 Профиль родителя", "profile")],
+    [_btn("🛡 Опасные действия", "profile:danger")],
+    [_btn("◀️ Главное меню", "back_to_menu")],
 ])
 
 # Backward compatibility for code paths/tests that still import main_keyboard.

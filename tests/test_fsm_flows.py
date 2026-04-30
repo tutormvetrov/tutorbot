@@ -48,6 +48,7 @@ from handlers.users.callbacks import (
     process_homework,
     process_homework_list,
     process_lesson_presence,
+    process_more,
     process_notif_action,
     start_student_reply,
 )
@@ -1475,6 +1476,60 @@ class HealthFormattingTest(unittest.TestCase):
         self.assertIn("Закладки перед уроком", text)
         self.assertIn("lesson_reminder", text)
         self.assertIn("error", text)
+
+
+class MoreCallbackFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_more_callback_renders_student_more_keyboard_for_student(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "full_name": "Анна Смирнова", "role": "student", "is_active": True}
+
+        message = DummyMessage(user_id=555, full_name="Анна Смирнова")
+        callback = DummyCallbackQuery("more", message=message, user_id=555, full_name="Анна Смирнова")
+        await process_more(callback, FakeDB())
+
+        self.assertTrue(message.edits)
+        callbacks = [
+            button.callback_data
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("profile", callbacks)
+        self.assertIn("freeze", callbacks)
+        self.assertIn("level_test:now", callbacks)
+        self.assertIn("notif:manage", callbacks)
+        self.assertIn("profile:danger", callbacks)
+        self.assertIn("back_to_menu", callbacks)
+        self.assertNotIn("more", callbacks)
+
+    async def test_more_callback_renders_parent_more_keyboard_for_parent(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "full_name": "Мария Иванова", "role": "parent", "is_active": True}
+
+        message = DummyMessage(user_id=801, full_name="Мария Иванова")
+        callback = DummyCallbackQuery("more", message=message, user_id=801, full_name="Мария Иванова")
+        await process_more(callback, FakeDB())
+
+        self.assertTrue(message.edits)
+        texts = [
+            button.text
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+        ]
+        callbacks = [
+            button.callback_data
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("👤 Профиль родителя", texts)
+        self.assertIn("profile", callbacks)
+        self.assertIn("profile:danger", callbacks)
+        self.assertIn("back_to_menu", callbacks)
+        self.assertNotIn("freeze", callbacks)
+        self.assertNotIn("level_test:now", callbacks)
 
 
 if __name__ == "__main__":

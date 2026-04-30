@@ -22,8 +22,10 @@ from utils.ui_text import (
     build_admin_homework_list_text,
     build_contacts_text,
     build_first_lesson_payment_invite_text,
+    build_help_text,
     build_homework_text,
     build_materials_text,
+    build_more_screen_text,
     build_schedule_text,
     build_requisites_text,
     build_study_plan_text,
@@ -417,6 +419,35 @@ class UITextTest(unittest.TestCase):
         self.assertIn("статистика по учебникам или книгам", text.lower())
         self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
         self.assertIn("PDF/DOCX", text)
+
+    def test_build_more_screen_text_student_form(self):
+        text = build_more_screen_text("student")
+
+        self.assertIn("Ещё", text)
+        self.assertIn("профиль", text.lower())
+        self.assertIn("заморозка", text.lower())
+        self.assertIn("тест уровня", text.lower())
+        self.assertIn("опасные действия", text.lower())
+
+    def test_build_more_screen_text_parent_form(self):
+        text = build_more_screen_text("parent")
+
+        self.assertIn("Ещё", text)
+        self.assertIn("профиль", text.lower())
+        self.assertIn("опасные действия", text.lower())
+        self.assertNotIn("заморозка", text.lower())
+        self.assertNotIn("тест уровня", text.lower())
+
+    def test_build_help_text_reflects_new_layout(self):
+        text = build_help_text()
+
+        self.assertIn("Справка", text)
+        self.assertIn("👤 <b>Ещё</b>", text)
+        self.assertIn("заморозка", text.lower())
+        self.assertIn("тест уровня", text.lower())
+        self.assertIn("опасные действия", text.lower())
+        self.assertIn("✉️ <b>Написать преподавателю</b>", text)
+        self.assertNotIn("👤 <b>Профиль</b>", text)
 
 
 if __name__ == "__main__":

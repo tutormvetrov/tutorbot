@@ -85,16 +85,13 @@ class ParentRegistrationFlowTest(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertIn("Связь с учеником найдена", message.answers[-1])
-        self.assertEqual(
-            _keyboard_texts(message.reply_markups[-1]),
-            [
-                "👨‍👩‍👧 Мои дети",
-                "📁 Материалы",
-                "📞 Контакты",
-                "👤 Профиль",
-                "✉️ Написать преподавателю",
-            ],
-        )
+        keyboard_texts = _keyboard_texts(message.reply_markups[-1])
+        self.assertIn("👨‍👩‍👧 Мои дети", keyboard_texts)
+        self.assertIn("✉️ Написать преподавателю", keyboard_texts)
+        self.assertIn("📁 Материалы", keyboard_texts)
+        self.assertIn("📞 Контакты", keyboard_texts)
+        self.assertIn("👤 Ещё", keyboard_texts)
+        self.assertNotIn("👤 Профиль", keyboard_texts)
 
 
 class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
