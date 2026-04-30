@@ -19,7 +19,7 @@ from handlers.users.callbacks import (
 from handlers.users.screens import get_user_home_payload
 from handlers.users.start import command_start, process_age, process_child_age, process_child_name, process_full_name
 from tests.helpers import DummyBot, DummyCallbackQuery, DummyConn, DummyMessage, DummyPool, DummyState
-from utils.ui_text import lesson_balance_label
+from utils.ui_text import child_traffic_light, lesson_balance_label
 
 
 def _keyboard_texts(reply_markup):
@@ -155,9 +155,10 @@ class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Кабинет родителя", text)
         self.assertIn("Анна Иванова", text)
-        self.assertIn("Активные ДЗ: <b>2</b>", text)
-        self.assertIn("🎓 Баланс: <b>3 урока</b>", text)
         self.assertIn("parent:child:7", [button.callback_data for row in keyboard.inline_keyboard for button in row if button.callback_data])
+        child_button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
+        self.assertTrue(any("Анна Иванова" in t for t in child_button_texts))
+        self.assertTrue(any(t.startswith(("🟢", "🟡", "🔴", "⏳")) for t in child_button_texts))
 
     async def test_parent_child_tabs_cover_schedule_homework_and_payments(self):
         class FakeDB:
@@ -284,3 +285,28 @@ class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
         await process_parent_child_payments(payments_callback, db)
         self.assertIn("Оплата", payments_message.edits[-1])
         self.assertIn("3000", payments_message.edits[-1])
+
+
+class ParentTrafficLightTest(unittest.TestCase):
+    def _child(self, link_status="linked", next_lesson_date=datetime.now(), lesson_balance=3, overdue_homework_count=0):
+        return {
+            "link_status": link_status,
+            "next_lesson_date": next_lesson_date,
+            "lesson_balance": lesson_balance,
+            "overdue_homework_count": overdue_homework_count,
+        }
+
+    def test_linked_child_with_lesson_and_balance_is_green(self):
+        self.assertEqual(child_traffic_light(self._child()), "🟢")
+
+    def test_pending_link_is_hourglass(self):
+        self.assertEqual(child_traffic_light(self._child(link_status="waiting_link")), "⏳")
+
+    def test_zero_balance_is_red(self):
+        self.assertEqual(child_traffic_light(self._child(lesson_balance=0)), "🔴")
+
+    def test_overdue_homework_is_yellow(self):
+        self.assertEqual(child_traffic_light(self._child(overdue_homework_count=2)), "🟡")
+
+    def test_no_lesson_is_red(self):
+        self.assertEqual(child_traffic_light(self._child(next_lesson_date=None)), "🔴")

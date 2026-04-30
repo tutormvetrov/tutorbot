@@ -2,6 +2,7 @@ import asyncpg
 from asyncpg.pool import Pool
 
 from data import config
+from utils.db_api.admin_inbox import DatabaseAdminInboxMixin
 from utils.db_api.admin_today import DatabaseAdminTodayMixin
 from utils.db_api.calendar_links import DatabaseCalendarLinksMixin
 from utils.db_api.homework import DatabaseHomeworkMixin
@@ -14,6 +15,7 @@ from utils.db_api.users import DatabaseUserMixin
 
 class Database(
     DatabaseSchemaMixin,
+    DatabaseAdminInboxMixin,
     DatabaseUserMixin,
     DatabaseHomeworkMixin,
     DatabaseStudyPlanMixin,

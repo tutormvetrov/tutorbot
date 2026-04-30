@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import json
 from datetime import date, datetime, timedelta
 
 from aiogram import html
@@ -778,23 +779,12 @@ def build_parent_home_text(parent_name: str, children: list[dict]) -> str:
         ])
         return "\n".join(lines)
 
-    lines.extend(["", "Краткая сводка по каждому ребёнку:"])
+    lines.extend(["", "👶 Дети:"])
     for child in children:
-        status = child.get("link_status")
-        status_label = "✅ Привязан" if status == "linked" else "⏳ Ждём совпадение по имени"
-        next_lesson = (
-            format_short_datetime(child.get("next_lesson_date"))
-            if child.get("next_lesson_date")
-            else "не назначен"
-        )
-        lines.extend([
-            "",
-            f"• <b>{html.quote(child.get('child_label') or '—')}</b>",
-            f"  {status_label}",
-            f"  📅 Следующий урок: <b>{html.quote(next_lesson)}</b>",
-            f"  📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>",
-            f"  🎓 Баланс: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
-        ])
+        icon = child_traffic_light(child)
+        child_name = html.quote(child.get("child_label") or "—")
+        summary = child_problem_summary(child)
+        lines.append(f"{icon} <b>{child_name}</b> — {html.quote(summary)}")
     return "\n".join(lines)
 
 
@@ -1703,15 +1693,6 @@ def build_admin_homework_description_prompt(
 
 
 def build_admin_today_text(snapshot: dict, today_date) -> str:
-    """
-    Build the «🎯 Сегодня» screen text.
-
-    snapshot keys: lessons_today (list of {time, full_name, lesson_format}),
-    unpaid_count, missing_homework_count, pending_freeze_count,
-    unanswered_replies_count.
-
-    today_date: datetime.date or datetime.datetime
-    """
     if hasattr(today_date, "strftime"):
         date_label = today_date.strftime("%-d %B %Y")
     else:
@@ -1725,7 +1706,6 @@ def build_admin_today_text(snapshot: dict, today_date) -> str:
 
     lines = [f"🎯 <b>Сегодня · {html.quote(date_label)}</b>", ""]
 
-    # Lessons block
     online_count = sum(1 for l in lessons if (l.get("lesson_format") or "online") != "offline")
     offline_count = len(lessons) - online_count
 
@@ -1748,7 +1728,6 @@ def build_admin_today_text(snapshot: dict, today_date) -> str:
 
     lines.append("")
 
-    # Attention block
     attention_items = []
     if unpaid:
         attention_items.append(
@@ -1777,7 +1756,6 @@ def build_admin_today_text(snapshot: dict, today_date) -> str:
 
 
 def _plural(n: int, form1: str, form2: str, form5: str) -> str:
-    """Return the correct Russian plural form for n."""
     n_abs = abs(n)
     n_mod100 = n_abs % 100
     n_mod10 = n_abs % 10
@@ -1788,3 +1766,274 @@ def _plural(n: int, form1: str, form2: str, form5: str) -> str:
     if 2 <= n_mod10 <= 4:
         return form2
     return form5
+
+
+# ─── Parent traffic lights ────────────────────────────────────────────────────
+
+def child_traffic_light(child_overview) -> str:
+    if isinstance(child_overview, dict):
+        get = child_overview.get
+    else:
+        def get(k, d=None):
+            try:
+                return child_overview[k]
+            except Exception:
+                return d
+
+    link_status = get("link_status")
+    if link_status not in ("linked",):
+        return "⏳"
+
+    next_lesson_date = get("next_lesson_date")
+    lesson_balance = int(get("lesson_balance") or 0)
+    overdue_homework_count = int(get("overdue_homework_count") or 0)
+
+    if lesson_balance == 0 or next_lesson_date is None:
+        return "🔴"
+
+    if lesson_balance <= 1 or overdue_homework_count > 0:
+        return "🟡"
+
+    return "🟢"
+
+
+def child_problem_summary(child_overview) -> str:
+    if isinstance(child_overview, dict):
+        get = child_overview.get
+    else:
+        def get(k, d=None):
+            try:
+                return child_overview[k]
+            except Exception:
+                return d
+
+    link_status = get("link_status")
+    if link_status not in ("linked",):
+        return "ждём подтверждения связи"
+
+    next_lesson_date = get("next_lesson_date")
+    lesson_balance = int(get("lesson_balance") or 0)
+    overdue_homework_count = int(get("overdue_homework_count") or 0)
+
+    if lesson_balance == 0:
+        return "нет оплаченных уроков"
+    if next_lesson_date is None:
+        return "нет ближайшего урока"
+    if overdue_homework_count > 0:
+        days = overdue_homework_count
+        if days == 1:
+            return f"ДЗ просрочено на {days} день"
+        elif 2 <= days <= 4:
+            return f"ДЗ просрочено на {days} дня"
+        else:
+            return f"ДЗ просрочено на {days} дней"
+    if lesson_balance <= 1:
+        return "остался 1 урок на балансе"
+
+    if isinstance(next_lesson_date, datetime):
+        return f"урок {next_lesson_date.strftime('%d.%m в %H:%M')}, всё в норме"
+    return "всё в норме"
+
+
+# ─── Stateful student CTA ─────────────────────────────────────────────────────
+
+def compute_student_cta(
+    user,
+    balance: int,
+    next_lesson: datetime | None,
+    active_homework: list,
+    homework_overdue_count: int,
+) -> dict | None:
+    now = datetime.now()
+
+    if next_lesson is not None:
+        delta = next_lesson - now
+        minutes_until = delta.total_seconds() / 60
+        if 0 <= minutes_until <= 15:
+            mins = int(minutes_until)
+            if user is not None and isinstance(user, dict):
+                vk_url = (
+                    (user.get("contacts") or {}).get("vk_call")
+                    if isinstance(user.get("contacts"), dict)
+                    else None
+                )
+            else:
+                vk_url = None
+            cta: dict = {
+                "kind": "vk_call",
+                "text": f"⏰ Урок начинается через {mins} мин.",
+                "button_label": "📞 VK Звонок",
+            }
+            if vk_url:
+                cta["button_url"] = vk_url
+            else:
+                cta["button_callback"] = "contacts"
+            return cta
+
+    if homework_overdue_count > 0:
+        hw = active_homework[0] if active_homework else None
+        title = (hw.get("title") or "ДЗ") if hw else "ДЗ"
+        if len(title) > 30:
+            title = title[:28] + "…"
+        return {
+            "kind": "overdue_homework",
+            "text": f"⚠️ Просрочено ДЗ: «{title}»",
+            "button_label": "📚 Открыть ДЗ",
+            "button_callback": "homework",
+        }
+
+    if balance == 0:
+        return {
+            "kind": "zero_balance",
+            "text": "💸 На балансе нет уроков. Оплатите ближайшую неделю.",
+            "button_label": "💰 Оплата",
+            "button_callback": "payment",
+        }
+
+    if user is not None:
+        level = (user.get("level") or "").strip() if isinstance(user, dict) else ""
+        first_lesson_date = user.get("first_lesson_date") if isinstance(user, dict) else None
+        if not level or level == "unknown":
+            if first_lesson_date is None:
+                return {
+                    "kind": "level_test",
+                    "text": "🧪 Пройдите тест уровня — это 10 минут.",
+                    "button_label": "🧪 Тест уровня",
+                    "button_callback": "level_test:now",
+                }
+
+    return None
+
+
+# ─── Admin Inbox text builders ────────────────────────────────────────────────
+
+_INBOX_KIND_LABELS: dict[str, str] = {
+    "reply": "Сообщение",
+    "freeze_request": "Заявка на заморозку",
+    "first_contact": "Первый контакт (родитель)",
+}
+
+_INBOX_CONTEXT_LABELS: dict[str, str] = {
+    "homework": "по ДЗ",
+    "payment": "по оплате",
+    "general": "общий",
+    "freeze": "заморозка",
+    "lesson": "по уроку",
+    "broadcast": "по рассылке",
+    "teacher_message": "по сообщению",
+    "review": "по отзыву",
+    "first_contact": "новый родитель",
+}
+
+
+def _inbox_payload(event) -> dict:
+    payload = event.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    return payload
+
+
+def build_admin_inbox_text(events: list) -> str:
+    unread_count = sum(1 for e in events if not e.get("handled_at"))
+    lines = [
+        "💬 <b>Inbox</b>",
+        f"Непрочитанных: <b>{unread_count}</b>" if unread_count else "Нет непрочитанных.",
+    ]
+    if not events:
+        return "\n".join(lines)
+
+    today_date = datetime.now().date()
+    yesterday_date = today_date - timedelta(days=1)
+
+    today_items = []
+    yesterday_items = []
+    older_items = []
+
+    for event in events:
+        created_at = event.get("created_at")
+        if isinstance(created_at, datetime):
+            event_date = created_at.date()
+        else:
+            event_date = None
+        if event_date == today_date:
+            today_items.append(event)
+        elif event_date == yesterday_date:
+            yesterday_items.append(event)
+        else:
+            older_items.append(event)
+
+    def _format_event(event) -> str:
+        payload = _inbox_payload(event)
+        name = (payload.get("full_name") or "—")[:20]
+        context = payload.get("context") or event.get("kind") or "—"
+        context_label = _INBOX_CONTEXT_LABELS.get(context, context)
+        created_at = event.get("created_at")
+        time_str = created_at.strftime("%H:%M") if isinstance(created_at, datetime) else "—"
+        preview = (payload.get("message_preview") or "")[:50]
+        handled = "✓" if event.get("handled_at") else ""
+        return f"{handled}• {time_str} · {html.quote(name)} ({html.quote(context_label)}): «{html.quote(preview)}»"
+
+    if today_items:
+        lines.extend(["", "🆕 <b>Сегодня</b>"])
+        lines.extend(_format_event(e) for e in today_items)
+
+    if yesterday_items:
+        lines.extend(["", "📬 <b>Вчера</b>"])
+        lines.extend(_format_event(e) for e in yesterday_items)
+
+    if older_items:
+        lines.extend(["", "📁 <b>Ранее</b>"])
+        lines.extend(_format_event(e) for e in older_items)
+
+    return "\n".join(lines)
+
+
+def build_admin_inbox_item_text(event) -> str:
+    payload = _inbox_payload(event)
+    kind = event.get("kind") or "—"
+    kind_label = _INBOX_KIND_LABELS.get(kind, kind)
+    name = html.quote(payload.get("full_name") or "—")
+    context = payload.get("context") or kind
+    context_label = _INBOX_CONTEXT_LABELS.get(context, context)
+    created_at = event.get("created_at")
+    dt_str = created_at.strftime("%d.%m.%Y %H:%M") if isinstance(created_at, datetime) else "—"
+    preview = html.quote((payload.get("message_preview") or "—")[:500])
+    handled = event.get("handled_at")
+
+    lines = [
+        f"📨 <b>{kind_label}</b>",
+        "",
+        f"👤 {name}",
+        f"🧭 Контекст: <b>{html.quote(context_label)}</b>",
+        f"📅 {dt_str}",
+        f"Статус: {'✅ Закрыто' if handled else '🆕 Открыто'}",
+        "",
+        f"💬 {preview}",
+    ]
+    return "\n".join(lines)
+
+
+def build_parent_home_text_with_lights(parent_name: str, children: list[dict]) -> str:
+    lines = [
+        "👨‍👩‍👧 <b>Кабинет родителя</b>",
+        "",
+        f"<b>{html.quote(parent_name)}</b>",
+    ]
+    if not children:
+        lines.extend([
+            "",
+            "Пока в кабинете нет детей, привязанных к вашему профилю.",
+            "Если ребёнок уже занимается, но здесь пусто, напишите преподавателю.",
+        ])
+        return "\n".join(lines)
+
+    lines.extend(["", "👶 Дети:"])
+    for child in children:
+        icon = child_traffic_light(child)
+        child_name = html.quote(child.get("child_label") or "—")
+        summary = child_problem_summary(child)
+        lines.append(f"{icon} <b>{child_name}</b> — {html.quote(summary)}")
+    return "\n".join(lines)

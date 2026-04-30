@@ -553,6 +553,21 @@ async def _finish_parent_registration(
         )
 
     await state.clear()
+
+    add_inbox_event = getattr(db, "add_inbox_event", None)
+    if callable(add_inbox_event):
+        try:
+            await add_inbox_event("first_contact", {
+                "telegram_id": message.from_user.id,
+                "full_name": full_name,
+                "context": "general",
+                "child_name": student_name,
+                "link_status": "linked" if linked_student else "waiting_link",
+                "message_preview": f"Регистрация родителя: {full_name}, ребёнок {student_name}",
+            })
+        except Exception:
+            logger.warning("Не удалось записать first_contact в admin_inbox", exc_info=True)
+
     await message.answer(
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 Вы: {html.quote(full_name)}\n"

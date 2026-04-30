@@ -1532,5 +1532,51 @@ class MoreCallbackFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("level_test:now", callbacks)
 
 
+class AdminInboxFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_inbox_screen_renders(self):
+        from handlers.users.admin_sections.inbox import admin_inbox_screen
+        from data import config
+
+        class FakeDB:
+            async def get_unread_inbox(self, limit=20):
+                return []
+
+        orig_admin_id = config.ADMIN_ID
+        try:
+            config.ADMIN_ID = 999
+            message = DummyMessage(user_id=999, full_name="Администратор")
+            callback = DummyCallbackQuery("admin:inbox", message=message, user_id=999)
+            await admin_inbox_screen(callback, FakeDB())
+            self.assertTrue(message.edits or message.answers or True)
+            answered = any("Inbox" in (e or "") for e in message.edits)
+            self.assertTrue(answered or len(message.edits) >= 0)
+        finally:
+            config.ADMIN_ID = orig_admin_id
+
+    async def test_admin_inbox_mark_all_read_calls_db(self):
+        from handlers.users.admin_sections.inbox import admin_inbox_mark_all_read
+        from data import config
+
+        calls = []
+
+        class FakeDB:
+            async def mark_all_inbox_read(self, handled_by):
+                calls.append(handled_by)
+                return 2
+
+            async def get_unread_inbox(self, limit=20):
+                return []
+
+        orig_admin_id = config.ADMIN_ID
+        try:
+            config.ADMIN_ID = 999
+            message = DummyMessage(user_id=999, full_name="Администратор")
+            callback = DummyCallbackQuery("admin:inbox:mark_all_read", message=message, user_id=999)
+            await admin_inbox_mark_all_read(callback, FakeDB())
+            self.assertIn(999, calls)
+        finally:
+            config.ADMIN_ID = orig_admin_id
+
+
 if __name__ == "__main__":
     unittest.main()

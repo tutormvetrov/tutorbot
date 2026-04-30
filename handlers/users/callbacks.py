@@ -817,6 +817,19 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
             f"⚠️ Не удалось переслать оригинал автоматически.\n\n{html.quote(fallback_text)}",
         )
 
+    add_inbox_event = getattr(db, "add_inbox_event", None)
+    if callable(add_inbox_event):
+        try:
+            await add_inbox_event("reply", {
+                "telegram_id": message.from_user.id,
+                "full_name": user["full_name"] or str(message.from_user.id),
+                "context": data.get("reply_context_key", "general"),
+                "message_preview": (message.text or message.caption or "")[:200],
+                "role": user["role"],
+            })
+        except Exception:
+            logger.warning("Не удалось записать reply в admin_inbox", exc_info=True)
+
     await state.clear()
     await message.answer(
         build_action_result_text(
@@ -1188,6 +1201,19 @@ async def process_freeze_confirm(callback_query: types.CallbackQuery, state: FSM
             f"Причина: {label}\n"
             f"Затронуто занятий: {len(active)}",
         )
+    add_inbox_event = getattr(db, "add_inbox_event", None)
+    if callable(add_inbox_event):
+        try:
+            await add_inbox_event("freeze_request", {
+                "telegram_id": callback_query.from_user.id,
+                "full_name": callback_query.from_user.full_name or str(callback_query.from_user.id),
+                "context": "freeze",
+                "reason": label,
+                "lessons_affected": len(active),
+                "message_preview": f"Заморозка: {label}",
+            })
+        except Exception:
+            logger.warning("Не удалось записать freeze_request в admin_inbox", exc_info=True)
 
     await callback_query.message.edit_text(
         build_freeze_success_text(label, state_data.get("freeze_active_count", len(active))),

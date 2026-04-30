@@ -8,12 +8,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+from datetime import datetime
+
 from keyboards.inline import (
     admin_education_keyboard,
     admin_keyboard,
     admin_service_keyboard,
     admin_students_keyboard,
     make_admin_education_keyboard,
+    make_admin_inbox_keyboard,
+    make_admin_inbox_item_keyboard,
     make_admin_parent_card_keyboard,
     make_admin_parent_danger_keyboard,
     make_admin_parents_list_keyboard,
@@ -27,6 +31,7 @@ from keyboards.inline import (
     make_lesson_followup_keyboard,
     make_lesson_presence_keyboard,
     make_materials_keyboard,
+    make_parent_home_keyboard,
     make_parent_payments_keyboard,
     make_profile_danger_keyboard,
     make_pricing_rates_keyboard,
@@ -461,6 +466,77 @@ class KeyboardHelpersTest(unittest.TestCase):
         self.assertIn("admin:inbox", callbacks)
         self.assertIn("admin:home", callbacks)
         self.assertIn("❄️ Заявки на заморозку (3)", texts)
+
+
+class AdminInboxKeyboardTest(unittest.TestCase):
+    def test_make_admin_inbox_keyboard_empty_has_mark_all_and_back(self):
+        kb = make_admin_inbox_keyboard([])
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("✓ Отметить всё прочитанным", texts)
+        self.assertIn("◀️ К панели", texts)
+        self.assertIn("admin:inbox:mark_all_read", callbacks)
+        self.assertIn("admin:home", callbacks)
+
+    def test_make_admin_inbox_keyboard_with_events_shows_item_buttons(self):
+        events = [
+            {
+                "id": 1,
+                "kind": "reply",
+                "payload": {"full_name": "Иван", "context": "homework", "message_preview": "Не понял"},
+                "created_at": datetime.now(),
+                "handled_at": None,
+            },
+        ]
+        kb = make_admin_inbox_keyboard(events)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:inbox:item:1", callbacks)
+        self.assertIn("admin:inbox:mark_all_read", callbacks)
+
+    def test_make_admin_inbox_item_keyboard_has_reply_close_back(self):
+        kb = make_admin_inbox_item_keyboard(42, "reply")
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("✉️ Ответить", texts)
+        self.assertIn("✓ Закрыть", texts)
+        self.assertIn("◀️ К Inbox", texts)
+        self.assertIn("admin:inbox:reply:42", callbacks)
+        self.assertIn("admin:inbox:item:42:close", callbacks)
+        self.assertIn("admin:inbox", callbacks)
+
+    def test_make_parent_home_keyboard_with_traffic_light_linked(self):
+        children = [
+            {
+                "link_id": 7,
+                "child_label": "Анна",
+                "link_status": "linked",
+                "next_lesson_date": datetime.now(),
+                "lesson_balance": 3,
+                "overdue_homework_count": 0,
+                "active_homework_count": 1,
+            }
+        ]
+        kb = make_parent_home_keyboard(children)
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+        child_text = next(t for t in texts if "Анна" in t)
+        self.assertTrue(child_text.startswith("🟢"), f"Expected green light, got: {child_text}")
+
+    def test_make_parent_home_keyboard_with_traffic_light_waiting(self):
+        children = [
+            {
+                "link_id": 8,
+                "child_label": "Маша",
+                "link_status": "waiting_link",
+                "next_lesson_date": None,
+                "lesson_balance": 0,
+                "overdue_homework_count": 0,
+                "active_homework_count": 0,
+            }
+        ]
+        kb = make_parent_home_keyboard(children)
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+        child_text = next(t for t in texts if "Маша" in t)
+        self.assertTrue(child_text.startswith("⏳"), f"Expected hourglass, got: {child_text}")
 
 
 if __name__ == "__main__":
