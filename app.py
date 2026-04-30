@@ -150,21 +150,26 @@ async def main():
 
     # Публичные команды
     public_commands = [
-        BotCommand(command="start",   description="Начать работу с ботом"),
-        BotCommand(command="menu",    description="Главное меню"),
-        BotCommand(command="help",    description="Помощь"),
-        BotCommand(command="profile", description="Мой профиль"),
+        BotCommand(command="start",     description="Начать работу с ботом"),
+        BotCommand(command="menu",      description="Главное меню"),
+        BotCommand(command="help",      description="Помощь"),
+        BotCommand(command="profile",   description="Мой профиль"),
+        BotCommand(command="freeze",    description="Заморозка занятия"),
+        BotCommand(command="plan",      description="Учебный план"),
+        BotCommand(command="materials", description="Учебные материалы"),
     ]
     await bot.set_my_commands(public_commands)
 
     # Команды администратора
     if config.ADMIN_ID:
         admin_commands = public_commands + [
-            BotCommand(command="admin", description="Панель администратора"),
-            BotCommand(command="sync",  description="Синхронизация Google Calendar"),
-            BotCommand(command="block", description="Block Telegram ID"),
+            BotCommand(command="admin",  description="Панель администратора"),
+            BotCommand(command="sync",   description="Синхронизация Google Calendar"),
+            BotCommand(command="block",  description="Block Telegram ID"),
             BotCommand(command="unblock", description="Unblock Telegram ID"),
             BotCommand(command="blocked", description="Blocked Telegram IDs"),
+            BotCommand(command="today",  description="Сегодня"),
+            BotCommand(command="health", description="Здоровье бота"),
         ]
         try:
             await bot.set_my_commands(
