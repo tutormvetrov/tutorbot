@@ -2,6 +2,7 @@ import asyncpg
 from asyncpg.pool import Pool
 
 from data import config
+from utils.db_api.admin_today import DatabaseAdminTodayMixin
 from utils.db_api.calendar_links import DatabaseCalendarLinksMixin
 from utils.db_api.homework import DatabaseHomeworkMixin
 from utils.db_api.lessons import DatabaseLessonMixin
@@ -19,6 +20,7 @@ class Database(
     DatabaseCalendarLinksMixin,
     DatabaseLessonMixin,
     DatabasePaymentMixin,
+    DatabaseAdminTodayMixin,
 ):
     def __init__(self):
         self.pool: Pool | None = None

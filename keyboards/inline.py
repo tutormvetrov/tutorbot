@@ -243,45 +243,43 @@ def make_lesson_followup_keyboard(lesson_id: int, student_id: int) -> InlineKeyb
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [_btn("🎯 Сегодня", "admin:today")],
     [_btn("👥 Ученики", "admin:cat:students"), _btn("📚 Учебный процесс", "admin:cat:education")],
-    [_btn("📢 Рассылка", "admin:broadcast"), _btn("⚙️ Сервис", "admin:cat:service")],
-    [_btn("🧪 Просмотр ролей", "admin:preview"), _btn("◀️ Главное меню", "back_to_menu")],
+    [_btn("💬 Inbox", "admin:inbox"), _btn("📢 Рассылка", "admin:broadcast")],
+    [_btn("⚙️ Сервис", "admin:cat:service")],
+    [_btn("◀️ Главное меню", "back_to_menu")],
 ])
 
 admin_students_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📋 Список учеников", "admin:students"), _btn("👨‍👩‍👧 Родители", "admin:parents")],
     [_btn("👥 Пары", "admin:pairs"), _btn("👤 Добавить ученика", "admin:add_student")],
-    [_btn("🏫 Формат занятий", "admin:lesson_formats")],
-    [_btn("🗣 Обращение", "admin:speech_styles")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
 
-admin_education_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("➕ Добавить занятие", "admin:add_lesson:education"), _btn("🗑 Удалить занятие", "admin:manage_lessons")],
-    [_btn("💳 Добавить оплату", "admin:add_payment:education"), _btn("❄️ Заморозки", "admin:freezes")],
-    [_btn("📚 Задать ДЗ", "admin:add_homework:education"), _btn("📋 Активные ДЗ", "admin:all_homework")],
-    [_btn("💳 Тарифы", "admin:pricing")],
-    [_btn("◀️ К панели", "back_to_admin")],
-])
+def make_admin_education_keyboard(pending_freeze_count: int = 0) -> InlineKeyboardMarkup:
+    freeze_label = f"❄️ Заявки на заморозку ({pending_freeze_count})" if pending_freeze_count else "❄️ Заявки на заморозку"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📅 Уроки: добавить / удалить", "admin:cat:education:lessons")],
+        [_btn("💰 Оплаты: добавить / просмотреть", "admin:cat:education:payments")],
+        [_btn("📚 ДЗ: задать / активные", "admin:cat:education:homework")],
+        [_btn(freeze_label, "admin:freezes")],
+        [_btn("💳 Тарифы", "admin:pricing")],
+        [_btn("◀️ К панели", "back_to_admin")],
+    ])
+
+
+# Keep a static default for backwards compatibility in imports.
+admin_education_keyboard = make_admin_education_keyboard(0)
 
 admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("📊 Мониторинг", "admin:service:monitoring")],
-    [_btn("🧠 Контекст и проект", "admin:service:context")],
-    [_btn("◀️ К панели", "back_to_admin")],
-])
-
-admin_service_monitoring_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("🔄 Синхронизация Calendar", "admin:sync:monitoring")],
+    [_btn("🏥 Здоровье бота", "admin:health")],
+    [_btn("🔄 Синхронизация Calendar", "admin:sync:service")],
     [_btn("🧭 Алиасы Calendar", "admin:calendar_aliases")],
     [_btn("📋 Отчёт синхронизации", "admin:calendar_report")],
-    [_btn("🏥 Здоровье бота", "admin:health")],
-    [_btn("◀️ К сервису", "admin:cat:service")],
-])
-
-admin_service_context_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🎨 Тональность бренда", "admin:brand_tone")],
     [_btn("📝 Рабочие заметки", "admin:notes")],
-    [_btn("◀️ К сервису", "admin:cat:service")],
+    [_btn("🧪 Просмотр ролей", "admin:preview")],
+    [_btn("◀️ К панели", "back_to_admin")],
 ])
 
 broadcast_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -865,8 +863,8 @@ def make_admin_student_picker_keyboard(students: list, flow: str, page: int, pag
         rows.append(nav_row)
 
     if flow == "calendar_aliases":
-        back_callback = "admin:service:monitoring"
-        back_label = "◀️ К мониторингу"
+        back_callback = "admin:cat:service"
+        back_label = "◀️ К сервису"
     elif flow == "preview_student":
         back_callback = "admin:preview"
         back_label = "◀️ К просмотру"
@@ -925,7 +923,7 @@ def make_admin_parent_picker_keyboard(parents: list, page: int, page_size: int) 
 admin_notes_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("➕ Новая заметка", "admin:notes:add")],
     [_btn("🧹 Очистить ленту", "admin:notes:clear")],
-    [_btn("◀️ К контексту", "admin:service:context")],
+    [_btn("◀️ К сервису", "admin:cat:service")],
 ])
 
 
@@ -1020,7 +1018,7 @@ def make_calendar_alias_student_keyboard(students: list) -> InlineKeyboardMarkup
         if len(label) > 60:
             label = label[:58] + "…"
         rows.append([_btn(label, f"calendar_alias_student:{student['telegram_id']}")])
-    rows.append([_btn("◀️ К мониторингу", "admin:service:monitoring")])
+    rows.append([_btn("◀️ К сервису", "admin:cat:service")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1032,10 +1030,22 @@ def make_calendar_alias_editor_keyboard(student_id: int) -> InlineKeyboardMarkup
     ])
 
 
-def make_brand_tone_keyboard(current_tone: str, back_callback: str = "admin:service:context") -> InlineKeyboardMarkup:
+def make_brand_tone_keyboard(current_tone: str, back_callback: str = "admin:cat:service") -> InlineKeyboardMarkup:
     rows = []
     for tone, label in BRAND_TONE_LABELS.items():
         prefix = "• " if tone == current_tone else ""
         rows.append([_btn(f"{prefix}{label.capitalize()}", f"admin:brand_tone_set:{tone}")])
     rows.append([_btn("◀️ Назад", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_today_keyboard(snapshot: dict) -> InlineKeyboardMarkup:
+    """Keyboard for the «🎯 Сегодня» screen."""
+    pending_freeze: int = int(snapshot.get("pending_freeze_count") or 0)
+    freeze_label = f"❄️ Заявки на заморозку ({pending_freeze})" if pending_freeze else "❄️ Заявки на заморозку"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📅 Открыть расписание дня", "admin:today:lessons")],
+        [_btn("💰 Кому отправить реквизиты", "admin:today:unpaid"), _btn("📚 Кому задать ДЗ", "admin:today:missing_hw")],
+        [_btn(freeze_label, "admin:freezes"), _btn("💬 Ответы учеников", "admin:inbox")],
+        [_btn("◀️ К панели", "admin:home")],
+    ])

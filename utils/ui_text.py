@@ -1634,3 +1634,91 @@ def build_admin_homework_description_prompt(
 
     lines.extend(["", ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT])
     return "\n".join(lines)
+
+
+def build_admin_today_text(snapshot: dict, today_date) -> str:
+    """
+    Build the «🎯 Сегодня» screen text.
+
+    snapshot keys: lessons_today (list of {time, full_name, lesson_format}),
+    unpaid_count, missing_homework_count, pending_freeze_count,
+    unanswered_replies_count.
+
+    today_date: datetime.date or datetime.datetime
+    """
+    if hasattr(today_date, "strftime"):
+        date_label = today_date.strftime("%-d %B %Y")
+    else:
+        date_label = str(today_date)
+
+    lessons: list[dict] = snapshot.get("lessons_today") or []
+    unpaid: int = int(snapshot.get("unpaid_count") or 0)
+    missing_hw: int = int(snapshot.get("missing_homework_count") or 0)
+    pending_freeze: int = int(snapshot.get("pending_freeze_count") or 0)
+    unanswered: int = int(snapshot.get("unanswered_replies_count") or 0)
+
+    lines = [f"🎯 <b>Сегодня · {html.quote(date_label)}</b>", ""]
+
+    # Lessons block
+    online_count = sum(1 for l in lessons if (l.get("lesson_format") or "online") != "offline")
+    offline_count = len(lessons) - online_count
+
+    if lessons:
+        count_parts = []
+        if online_count:
+            count_parts.append(f"{online_count} онлайн")
+        if offline_count:
+            count_parts.append(f"{offline_count} очно")
+        count_suffix = f" ({' / '.join(count_parts)})" if count_parts else ""
+        lines.append(f"📅 Уроки сегодня: <b>{len(lessons)}{count_suffix}</b>")
+        for i, lesson in enumerate(lessons):
+            prefix = "└" if i == len(lessons) - 1 else "├"
+            fmt_label = "очно" if (lesson.get("lesson_format") or "online") == "offline" else "онлайн"
+            lines.append(
+                f"   {prefix} {html.quote(lesson['time'])} · {html.quote(lesson['full_name'])} ({fmt_label})"
+            )
+    else:
+        lines.append("📅 Уроков сегодня: <b>0</b>")
+
+    lines.append("")
+
+    # Attention block
+    attention_items = []
+    if unpaid:
+        attention_items.append(
+            f"• {unpaid} {_plural(unpaid, 'ученик без оплаты', 'ученика без оплаты', 'учеников без оплаты')} на следующую неделю"
+        )
+    if missing_hw:
+        attention_items.append(
+            f"• {missing_hw} {_plural(missing_hw, 'ученик', 'ученика', 'учеников')} — ДЗ перед завтрашним уроком не задано"
+        )
+    if pending_freeze:
+        attention_items.append(
+            f"• {pending_freeze} {_plural(pending_freeze, 'заявка на заморозку ждёт', 'заявки на заморозку ждут', 'заявок на заморозку ждут')} решения"
+        )
+    if unanswered:
+        attention_items.append(
+            f"• {unanswered} {_plural(unanswered, 'ответ ученика', 'ответа учеников', 'ответов учеников')} за последние сутки"
+        )
+
+    if attention_items:
+        lines.append("⚠️ <b>Внимание сегодня:</b>")
+        lines.extend(attention_items)
+    else:
+        lines.append("✅ <b>Всё в порядке</b> — нет срочных задач.")
+
+    return "\n".join(lines)
+
+
+def _plural(n: int, form1: str, form2: str, form5: str) -> str:
+    """Return the correct Russian plural form for n."""
+    n_abs = abs(n)
+    n_mod100 = n_abs % 100
+    n_mod10 = n_abs % 10
+    if 11 <= n_mod100 <= 19:
+        return form5
+    if n_mod10 == 1:
+        return form1
+    if 2 <= n_mod10 <= 4:
+        return form2
+    return form5
