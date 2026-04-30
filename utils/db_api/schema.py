@@ -679,6 +679,36 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_learning_plan_schema", exc)
             return
 
+    async def migrate_users_add_first_lesson_invite(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS first_lesson_invite_sent BOOLEAN DEFAULT false;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS first_lesson_invite_sent_at TIMESTAMP;",
+                execute=True,
+            )
+            # Backfill: existing students that already have a completed lesson must not
+            # receive a retroactive "thank you for your first lesson" message.
+            await self.execute(
+                """
+                UPDATE users u
+                SET first_lesson_invite_sent = true,
+                    first_lesson_invite_sent_at = COALESCE(first_lesson_invite_sent_at, CURRENT_TIMESTAMP)
+                WHERE COALESCE(first_lesson_invite_sent, false) = false
+                  AND EXISTS (
+                      SELECT 1 FROM lessons l
+                      WHERE l.student_id = u.telegram_id
+                        AND l.status = 'completed'
+                  )
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_first_lesson_invite", exc)
+            return
+
     async def migrate_default_pricing_rate(self):
         try:
             existing = await self.execute(
@@ -733,6 +763,8 @@ class DatabaseSchemaMixin:
                 "current_bookmark_state",
                 "current_bookmark_updated_at",
                 "current_bookmark_lesson_id",
+                "first_lesson_invite_sent",
+                "first_lesson_invite_sent_at",
             },
             "lessons": {
                 "lesson_date",
@@ -900,5 +932,6 @@ class DatabaseSchemaMixin:
         await self.migrate_calendar_links_indexes()
         await self.migrate_student_group_member_invites()
         await self.migrate_learning_plan_schema()
+        await self.migrate_users_add_first_lesson_invite()
         await self.migrate_default_pricing_rate()
         await self.verify_required_schema()

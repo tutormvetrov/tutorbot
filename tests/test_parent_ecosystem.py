@@ -89,10 +89,10 @@ class ParentRegistrationFlowTest(unittest.IsolatedAsyncioTestCase):
             _keyboard_texts(message.reply_markups[-1]),
             [
                 "👨‍👩‍👧 Мои дети",
-                "✉️ Написать преподавателю",
-                "👤 Профиль",
+                "📁 Материалы",
                 "📞 Контакты",
-                "💳 Реквизиты",
+                "👤 Профиль",
+                "✉️ Написать преподавателю",
             ],
         )
 

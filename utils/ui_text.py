@@ -14,7 +14,7 @@ from utils.brand import (
 from utils.homework_delivery import delivery_badge
 from utils.homework_materials import build_next_homework_hint, material_progress_label
 from utils.homework_text import homework_body_html, homework_preview_text
-from utils.speech import speech_style_label
+from utils.speech import choose_form, speech_style_label
 from utils.time import business_today
 
 
@@ -591,6 +591,60 @@ def build_pricing_rates_text(rates: list) -> str:
     return "\n".join(lines)
 
 
+def build_materials_text(materials_url: str = "", website_url: str = "") -> str:
+    lines = ["📁 <b>Учебные материалы</b>"]
+    if materials_url:
+        lines.extend([
+            "",
+            "Все учебники и раздаточные материалы собраны в одном облачном хранилище.",
+            "Откройте по кнопке ниже — ссылка работает с телефона и компьютера.",
+        ])
+    elif website_url:
+        lines.extend([
+            "",
+            "Материалы и учебники собраны на сайте преподавателя.",
+            "Откройте сайт по кнопке ниже — там же тест уровня и информация о занятиях.",
+        ])
+    else:
+        lines.extend([
+            "",
+            "Ссылка на учебные материалы пока не подключена.",
+            "Напишите преподавателю — он пришлёт нужные файлы напрямую.",
+        ])
+    return "\n".join(lines)
+
+
+def build_first_lesson_payment_invite_text(
+    student_name: str,
+    requisites: dict,
+    pricing_context: dict | None = None,
+    speech_style: str | None = None,
+) -> str:
+    requisites_block = build_requisites_text(requisites or {}, pricing_context)
+    intro = (
+        f"💛 <b>Спасибо за первый урок, {html.quote(student_name)}!</b>"
+        if student_name
+        else "💛 <b>Спасибо за первый урок!</b>"
+    )
+    next_step = choose_form(
+        speech_style,
+        "Когда будет удобно, оплатите ближайшую неделю занятий — расписание и темп тогда сохранятся без пауз.",
+        "Когда будет удобно, оплати ближайшую неделю занятий — расписание и темп тогда сохранятся без пауз.",
+    )
+    confirm = choose_form(
+        speech_style,
+        "После перевода нажмите <b>«Сообщить об оплате»</b>, и я её отмечу.",
+        "После перевода нажми <b>«Сообщить об оплате»</b>, и я её отмечу.",
+    )
+    return (
+        f"{intro}\n\n"
+        f"Ниже — реквизиты на случай, если ещё не оплачивали.\n\n"
+        f"{requisites_block}\n\n"
+        f"{next_step}\n"
+        f"{confirm}"
+    )
+
+
 def build_contacts_text(info: dict, show_address: bool = False) -> str:
     contacts = info.get("contacts", {})
     lines = [
@@ -653,10 +707,10 @@ def build_help_text() -> str:
         "📅 <b>Расписание</b> — ближайшие занятия\n"
         "📚 <b>Домашние задания</b> — активные и выполненные задания\n"
         "❄️ <b>Заморозка</b> — заявка на паузу в занятиях\n"
-        "💰 <b>Оплата</b> — баланс уроков и история оплат\n"
+        "💰 <b>Оплата</b> — баланс уроков, история оплат и реквизиты\n"
+        "📁 <b>Материалы</b> — учебники и раздаточные материалы\n"
         "👤 <b>Профиль</b> — данные, напоминания и тест уровня\n"
         "📞 <b>Контакты</b> — связь, онлайн-занятия и очный адрес\n"
-        "💳 <b>Реквизиты</b> — стоимость и способы оплаты\n"
         f"{site_line}"
     )
 

@@ -56,6 +56,7 @@ from states.registration import StudentReply
 from tests.helpers import DummyBot, DummyCallbackQuery, DummyConn, DummyMessage, DummyPool, DummyState
 from utils.db_api.lessons import DatabaseLessonMixin
 from utils.scheduler import (
+    first_lesson_payment_invite_job,
     homework_gap_check_job,
     lesson_reminder_job,
     teacher_bookmark_reminder_job,
@@ -1098,6 +1099,72 @@ class ReminderLogicTest(unittest.IsolatedAsyncioTestCase):
             await lesson_reminder_job(bot, db)
 
         self.assertEqual(db.sent, [])
+
+    async def test_first_lesson_payment_invite_job_sends_requisites_and_marks_user(self):
+        bot = DummyBot()
+
+        class FakeDB:
+            def __init__(self):
+                self.marked = []
+                self.pricing_calls = []
+
+            async def get_students_for_first_lesson_invite(self):
+                return [
+                    {
+                        "telegram_id": 777,
+                        "full_name": "Анна Смирнова",
+                        "speech_style": "formal",
+                        "lesson_duration_minutes": 90,
+                        "first_lesson_date": datetime(2026, 4, 30, 12, 0),
+                    }
+                ]
+
+            async def get_student_pricing_context(self, student_id):
+                self.pricing_calls.append(student_id)
+                return {
+                    "rate": {"amount": 3000, "currency": "RUB", "duration_minutes": 90, "group_size": 1},
+                    "group_size": 1,
+                    "duration_minutes": 90,
+                }
+
+            async def mark_first_lesson_invite_sent(self, telegram_id):
+                self.marked.append(telegram_id)
+
+        db = FakeDB()
+        await first_lesson_payment_invite_job(bot, db)
+
+        self.assertEqual(db.marked, [777])
+        self.assertEqual(db.pricing_calls, [777])
+        self.assertEqual(len(bot.sent_messages), 1)
+        message = bot.sent_messages[0]
+        self.assertEqual(message.chat_id, 777)
+        self.assertIn("первый урок", message.text)
+        self.assertIn("Реквизиты", message.text)
+        callbacks = [
+            button.callback_data
+            for row in message.reply_markup.inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("requisites", callbacks)
+        self.assertIn("payment", callbacks)
+        self.assertIn("reply:payment", callbacks)
+
+    async def test_first_lesson_payment_invite_job_skips_when_no_candidates(self):
+        bot = DummyBot()
+
+        class FakeDB:
+            async def get_students_for_first_lesson_invite(self):
+                return []
+
+            async def get_student_pricing_context(self, student_id):  # pragma: no cover - not called
+                raise AssertionError("pricing context fetched without candidates")
+
+            async def mark_first_lesson_invite_sent(self, telegram_id):  # pragma: no cover
+                raise AssertionError("mark fired without candidates")
+
+        await first_lesson_payment_invite_job(bot, FakeDB())
+        self.assertEqual(bot.sent_messages, [])
 
     async def test_teacher_lesson_followup_job_sends_message_and_marks_lesson(self):
         bot = DummyBot()

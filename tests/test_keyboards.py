@@ -20,16 +20,20 @@ from keyboards.inline import (
     make_admin_student_card_keyboard,
     make_admin_students_list_keyboard,
     make_contacts_keyboard,
+    make_first_lesson_invite_keyboard,
     make_homework_item_keyboard,
     make_lesson_delete_confirm_keyboard,
     make_lesson_followup_keyboard,
     make_lesson_presence_keyboard,
+    make_materials_keyboard,
     make_parent_payments_keyboard,
     make_profile_danger_keyboard,
     make_pricing_rates_keyboard,
+    make_schedule_keyboard,
     make_self_delete_review_keyboard,
     make_study_plan_keyboard,
     make_teacher_reply_keyboard,
+    parent_main_keyboard,
     parent_profile_keyboard,
     payment_keyboard,
     profile_keyboard,
@@ -38,14 +42,62 @@ from keyboards.inline import (
 
 
 class KeyboardHelpersTest(unittest.TestCase):
-    def test_student_main_menu_puts_study_plan_first(self):
+    def test_student_main_menu_puts_schedule_first_and_drops_duplicate_requisites(self):
         texts = [button.text for row in student_main_keyboard.inline_keyboard for button in row]
         callbacks = [button.callback_data for row in student_main_keyboard.inline_keyboard for button in row if button.callback_data]
 
-        self.assertEqual(student_main_keyboard.inline_keyboard[0][0].text, "📌 Учебный план")
-        self.assertEqual(student_main_keyboard.inline_keyboard[0][1].text, "📚 Домашние задания")
+        # Schedule must be on the very first row — the user reported it was hard
+        # to find when it was buried two rows down or behind Contacts.
+        self.assertEqual(student_main_keyboard.inline_keyboard[0][0].text, "📅 Расписание")
+        self.assertIn("schedule", callbacks)
         self.assertIn("study_plan", callbacks)
         self.assertIn("homework", callbacks)
+        self.assertIn("materials", callbacks)
+        # The Requisites button is reached via Payment → Requisites, not from
+        # the main menu, so it must not appear at the top level.
+        self.assertNotIn("requisites", callbacks)
+        self.assertNotIn("💳 Реквизиты", texts)
+
+    def test_parent_main_menu_drops_duplicate_requisites(self):
+        callbacks = [button.callback_data for row in parent_main_keyboard.inline_keyboard for button in row if button.callback_data]
+        texts = [button.text for row in parent_main_keyboard.inline_keyboard for button in row]
+
+        self.assertIn("parent:home", callbacks)
+        self.assertIn("materials", callbacks)
+        self.assertIn("contacts", callbacks)
+        self.assertNotIn("requisites", callbacks)
+        self.assertNotIn("💳 Реквизиты", texts)
+
+    def test_schedule_keyboard_exposes_calendar_url(self):
+        kb = make_schedule_keyboard("https://calendar.google.com/example")
+        urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("https://calendar.google.com/example", urls)
+        self.assertIn("back_to_menu", callbacks)
+
+    def test_schedule_keyboard_without_calendar_url_keeps_back_button(self):
+        kb = make_schedule_keyboard()
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+
+        self.assertEqual(callbacks, ["back_to_menu"])
+
+    def test_materials_keyboard_prefers_dedicated_url(self):
+        kb = make_materials_keyboard(materials_url="https://filen.io/example", website_url="https://site")
+        urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+
+        self.assertIn("https://filen.io/example", urls)
+        self.assertIn("📁 Открыть материалы", texts)
+        self.assertIn("https://site", urls)
+
+    def test_first_lesson_invite_keyboard_exposes_payment_actions(self):
+        kb = make_first_lesson_invite_keyboard()
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("requisites", callbacks)
+        self.assertIn("payment", callbacks)
+        self.assertIn("reply:payment", callbacks)
 
     def test_study_plan_keyboard_exposes_pdf_and_checklist_toggles(self):
         kb = make_study_plan_keyboard(
@@ -94,6 +146,24 @@ class KeyboardHelpersTest(unittest.TestCase):
         self.assertEqual(kb.inline_keyboard[0][0].url, "https://vk.com/call/join/example")
         self.assertEqual(kb.inline_keyboard[1][0].text, "📹 Google Meet (VPN)")
         self.assertEqual(kb.inline_keyboard[1][0].url, "https://meet.google.com/example")
+
+    def test_contacts_keyboard_no_longer_carries_calendar_or_materials_links(self):
+        # The Google Calendar URL now lives on the Schedule screen and the
+        # materials URL has its own top-level entry. Contacts keeps only
+        # connection-related links so the schedule shortcut isn't ambiguous.
+        kb = make_contacts_keyboard(
+            booking_url="https://t.me/teacher",
+            vk_call_url="https://vk.com/call/example",
+            google_meet_url="https://meet.google.com/example",
+            website_url="https://teacher.example",
+        )
+        urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+
+        self.assertNotIn("📅 Открыть расписание", texts)
+        self.assertNotIn("📁 Учебные материалы", texts)
+        self.assertIn("https://t.me/teacher", urls)
+        self.assertIn("https://teacher.example", urls)
 
     def test_student_payment_keyboard_groups_payment_actions(self):
         texts = [button.text for row in payment_keyboard.inline_keyboard for button in row]

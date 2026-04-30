@@ -64,17 +64,17 @@ level_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 student_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("📌 Учебный план", "study_plan"), _btn("📚 Домашние задания", "homework")],
-    [_btn("📅 Расписание", "schedule"), _btn("💰 Оплата", "payment")],
+    [_btn("📅 Расписание", "schedule"), _btn("📚 Домашние задания", "homework")],
+    [_btn("📌 Учебный план", "study_plan"), _btn("💰 Оплата", "payment")],
+    [_btn("📁 Материалы", "materials"), _btn("📞 Контакты", "contacts")],
     [_btn("❄️ Заморозка", "freeze"), _btn("👤 Профиль", "profile")],
-    [_btn("📞 Контакты", "contacts")],
-    [_btn("💳 Реквизиты", "requisites"), _btn("✉️ Написать преподавателю", "reply:general")],
+    [_btn("✉️ Написать преподавателю", "reply:general")],
 ])
 
 parent_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("👨‍👩‍👧 Мои дети", "parent:home"), _btn("✉️ Написать преподавателю", "reply:general")],
-    [_btn("👤 Профиль", "profile"), _btn("📞 Контакты", "contacts")],
-    [_btn("💳 Реквизиты", "requisites")],
+    [_btn("👨‍👩‍👧 Мои дети", "parent:home")],
+    [_btn("📁 Материалы", "materials"), _btn("📞 Контакты", "contacts")],
+    [_btn("👤 Профиль", "profile"), _btn("✉️ Написать преподавателю", "reply:general")],
 ])
 
 # Backward compatibility for code paths/tests that still import main_keyboard.
@@ -781,27 +781,47 @@ def make_payment_delete_confirm_keyboard(student_id: int, payment_id: int, page:
 
 def make_contacts_keyboard(
     booking_url: str = "",
-    calendar_url: str = "",
     vk_call_url: str = "",
     google_meet_url: str = "",
     website_url: str = "",
-    materials_url: str = "",
 ) -> InlineKeyboardMarkup:
     rows = []
     if vk_call_url:
         rows.append([_url_btn("📞 VK Звонок", vk_call_url)])
     if google_meet_url:
         rows.append([_url_btn("📹 Google Meet (VPN)", google_meet_url)])
-    if calendar_url:
-        rows.append([_url_btn("📅 Открыть расписание", calendar_url)])
     if booking_url:
         rows.append([_url_btn("📝 Записаться на урок", booking_url)])
-    if materials_url:
-        rows.append([_url_btn("📁 Учебные материалы", materials_url)])
     if website_url:
-        rows.append([_url_btn("↗️ Сайт и материалы", website_url)])
+        rows.append([_url_btn("↗️ Сайт преподавателя", website_url)])
     rows.append([_btn("◀️ Главное меню", "back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_schedule_keyboard(calendar_url: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if calendar_url:
+        rows.append([_url_btn("🗓 Открыть Google Calendar", calendar_url)])
+    rows.append([_btn("◀️ Главное меню", "back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_materials_keyboard(materials_url: str = "", website_url: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if materials_url:
+        rows.append([_url_btn("📁 Открыть материалы", materials_url)])
+    if website_url:
+        rows.append([_url_btn("↗️ Сайт преподавателя", website_url)])
+    rows.append([_btn("◀️ Главное меню", "back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_first_lesson_invite_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("💳 Реквизиты", "requisites")],
+        [_btn("💰 Открыть раздел оплаты", "payment")],
+        [_btn("✉️ Сообщить об оплате", "reply:payment")],
+    ])
 
 
 def make_back_button_keyboard(label: str, callback_data: str) -> InlineKeyboardMarkup:

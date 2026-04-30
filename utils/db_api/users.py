@@ -1008,6 +1008,56 @@ class DatabaseUserMixin:
             telegram_id, execute=True,
         )
 
+    async def get_students_for_first_lesson_invite(self):
+        """Students whose very first lesson has just ended and who have not yet
+        received the post-first-lesson payment invite. Skips anyone with a
+        confirmed payment so we don't pester paying students."""
+        return await self.execute(
+            """
+            SELECT
+                u.telegram_id,
+                u.full_name,
+                COALESCE(u.speech_style, 'formal') AS speech_style,
+                COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes,
+                first_lesson.lesson_date AS first_lesson_date
+            FROM users u
+            JOIN LATERAL (
+                SELECT l.lesson_date
+                FROM lessons l
+                WHERE l.student_id = u.telegram_id
+                  AND l.lesson_date IS NOT NULL
+                ORDER BY l.lesson_date ASC
+                LIMIT 1
+            ) AS first_lesson ON TRUE
+            WHERE u.role = 'student'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+              AND COALESCE(u.first_lesson_invite_sent, false) = false
+              AND first_lesson.lesson_date
+                  + (COALESCE(u.lesson_duration_minutes, 90) * INTERVAL '1 minute')
+                  <= NOW()
+              AND NOT EXISTS (
+                  SELECT 1 FROM payments p
+                  WHERE p.student_id = u.telegram_id
+                    AND p.status = 'confirmed'
+              )
+            ORDER BY first_lesson.lesson_date ASC
+            """,
+            fetch=True,
+        )
+
+    async def mark_first_lesson_invite_sent(self, telegram_id: int):
+        await self.execute(
+            """
+            UPDATE users
+            SET first_lesson_invite_sent = true,
+                first_lesson_invite_sent_at = CURRENT_TIMESTAMP
+            WHERE telegram_id = $1
+            """,
+            telegram_id,
+            execute=True,
+        )
+
     async def get_students_with_balances(self):
         return await self.execute(
             """

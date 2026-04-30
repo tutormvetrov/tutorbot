@@ -13,10 +13,10 @@ from keyboards.inline import (
     cancel_fsm_keyboard, make_freeze_confirm_keyboard, FREEZE_REASON_LABELS,
     payment_keyboard, make_homework_filter_keyboard,
     make_homework_item_keyboard, make_homework_list_keyboard, make_contacts_keyboard,
-    make_notifications_keyboard, profile_keyboard,
+    make_materials_keyboard, make_notifications_keyboard, profile_keyboard,
     make_parent_child_keyboard, make_parent_homework_keyboard, make_parent_homework_item_keyboard,
     make_parent_payments_keyboard, make_level_test_link_keyboard, make_profile_danger_keyboard,
-    make_self_delete_confirm_keyboard, make_self_delete_review_keyboard,
+    make_schedule_keyboard, make_self_delete_confirm_keyboard, make_self_delete_review_keyboard,
     make_teacher_reply_keyboard, make_write_to_student_keyboard, make_back_button_keyboard,
     make_study_plan_keyboard,
 )
@@ -44,6 +44,7 @@ from utils.ui_text import (
     build_freeze_intro_text,
     build_freeze_success_text,
     build_homework_text,
+    build_materials_text,
     build_notifications_text,
     build_parent_child_hub_text,
     build_payment_text,
@@ -397,7 +398,14 @@ async def process_menu_choice(callback_query: types.CallbackQuery, db: Database)
     if choice == 'schedule':
         lessons = await db.get_active_lessons(learning_user_id)
         text = build_schedule_text(lessons, lesson_format=user.get("lesson_format"))
-        await _edit_text_for_actor(callback_query.message, text, back_to_menu_keyboard, preview)
+        info = load_teacher_info()
+        calendar_url = info.get('contacts', {}).get('calendar_url', '')
+        await _edit_text_for_actor(
+            callback_query.message,
+            text,
+            make_schedule_keyboard(calendar_url),
+            preview,
+        )
 
     elif choice == 'freeze':
         lessons = await db.get_active_lessons(learning_user_id)
@@ -856,13 +864,26 @@ async def process_contacts(callback_query: types.CallbackQuery, db: Database):
     contacts = info.get('contacts', {})
     kb = make_contacts_keyboard(
         booking_url=contacts.get('booking_url', ''),
-        calendar_url=contacts.get('calendar_url', ''),
         vk_call_url=contacts.get('vk_call', ''),
         google_meet_url=contacts.get('google_meet', ''),
         website_url=_get_project_site_url(info),
-        materials_url=_get_materials_url(info),
     )
     await _edit_text_for_actor(callback_query.message, text, kb, preview)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == 'materials')
+async def process_materials(callback_query: types.CallbackQuery, db: Database):
+    info = load_teacher_info()
+    _, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
+    materials_url = _get_materials_url(info)
+    website_url = _get_project_site_url(info)
+    await _edit_text_for_actor(
+        callback_query.message,
+        build_materials_text(materials_url=materials_url, website_url=website_url),
+        make_materials_keyboard(materials_url=materials_url, website_url=website_url),
+        preview,
+    )
     await callback_query.answer()
 
 

@@ -21,7 +21,9 @@ from utils.ui_text import (
     build_broadcast_preview_text,
     build_admin_homework_list_text,
     build_contacts_text,
+    build_first_lesson_payment_invite_text,
     build_homework_text,
+    build_materials_text,
     build_schedule_text,
     build_requisites_text,
     build_study_plan_text,
@@ -63,6 +65,41 @@ class UITextTest(unittest.TestCase):
         self.assertIn("Сообщить об оплате", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+
+    def test_materials_text_handles_present_and_missing_url(self):
+        with_url = build_materials_text(materials_url="https://filen.io/example")
+        without_url = build_materials_text()
+        with_site = build_materials_text(website_url="https://teacher.example")
+
+        self.assertIn("Учебные материалы", with_url)
+        self.assertNotIn("https://filen.io", with_url)  # link is on the button, not in text
+        self.assertIn("Учебные материалы", without_url)
+        self.assertIn("Напишите преподавателю", without_url)
+        self.assertIn("сайте преподавателя", with_site)
+
+    def test_first_lesson_payment_invite_text_includes_thanks_and_requisites(self):
+        text = build_first_lesson_payment_invite_text(
+            "Анна",
+            {"rate": "3000 ₽ / 90 минут", "card": "1234"},
+            speech_style="formal",
+        )
+
+        self.assertIn("первый урок", text)
+        self.assertIn("Анна", text)
+        self.assertIn("Реквизиты и стоимость", text)
+        self.assertIn("Сообщить об оплате", text)
+        # "formal" form addresses the student with «оплатите», not «оплати».
+        self.assertIn("оплатите", text)
+
+    def test_first_lesson_payment_invite_text_uses_informal_form_when_requested(self):
+        text = build_first_lesson_payment_invite_text(
+            "Аня",
+            {"card": "1234"},
+            speech_style="informal",
+        )
+
+        self.assertIn("оплати", text)
+        self.assertNotIn("оплатите", text)
 
     def test_requisites_text_uses_exact_pricing_context(self):
         text = build_requisites_text(

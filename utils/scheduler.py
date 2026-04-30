@@ -10,6 +10,7 @@ from data import config
 from data.config import load_teacher_info
 from keyboards.inline import (
     make_back_button_keyboard,
+    make_first_lesson_invite_keyboard,
     make_lesson_presence_keyboard,
     make_lesson_followup_keyboard,
     make_study_plan_open_keyboard,
@@ -26,6 +27,7 @@ from utils.reschedule import encode_reschedule_slot, find_next_free_reschedule_s
 from utils.speech import choose_form
 from utils.time import business_naive_now, business_today
 from utils.ui_text import (
+    build_first_lesson_payment_invite_text,
     build_parent_weekly_digest_text,
     build_teacher_bookmark_reminder_text,
     build_teacher_lesson_followup_text,
@@ -392,6 +394,59 @@ async def teacher_bookmark_reminder_job(bot, db: "Database"):
     write_runtime_event("teacher_bookmark_reminder", "ok", sent=sent_count, checked=len(lessons))
 
 
+async def first_lesson_payment_invite_job(bot, db: "Database"):
+    """После первого урока, если ученик ещё не оплачивал, шлём
+    спасибо + реквизиты + кнопку «Сообщить об оплате»."""
+    students = await db.get_students_for_first_lesson_invite() or []
+    sent_count = 0
+    info = load_teacher_info()
+    requisites = info.get("requisites", {})
+
+    for student in students:
+        try:
+            pricing_context = await db.get_student_pricing_context(student["telegram_id"])
+            text = build_first_lesson_payment_invite_text(
+                student.get("full_name") or "",
+                requisites,
+                pricing_context=pricing_context,
+                speech_style=student.get("speech_style"),
+            )
+            await asyncio.wait_for(
+                bot.send_message(
+                    student["telegram_id"],
+                    text,
+                    reply_markup=make_first_lesson_invite_keyboard(),
+                ),
+                timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
+            )
+            await db.mark_first_lesson_invite_sent(student["telegram_id"])
+            sent_count += 1
+            logger.info(
+                "Отправлено приглашение к оплате после первого урока ученику %s (%s)",
+                student.get("full_name"),
+                student["telegram_id"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Ошибка приглашения к оплате после первого урока для %s: %s",
+                student.get("telegram_id"),
+                exc,
+            )
+
+    update_job_status(
+        "first_lesson_payment_invite",
+        "ok",
+        sent=sent_count,
+        checked=len(students),
+    )
+    write_runtime_event(
+        "first_lesson_payment_invite",
+        "ok",
+        sent=sent_count,
+        checked=len(students),
+    )
+
+
 async def calendar_sync_job(bot, db: "Database"):
     """Каждые 30 минут — автосинхронизация Google Calendar."""
     try:
@@ -638,6 +693,13 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="teacher_lesson_followup",
         name="Teacher follow-up после урока",
+    )
+    scheduler.add_job(
+        first_lesson_payment_invite_job,
+        CronTrigger(minute="*/5"),
+        args=[bot, db],
+        id="first_lesson_payment_invite",
+        name="Реквизиты после первого урока (для новых учеников)",
     )
     scheduler.add_job(
         teacher_bookmark_reminder_job,
