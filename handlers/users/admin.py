@@ -16,17 +16,15 @@ from handlers.users.admin_sections.common import (
 from handlers.users.screens import render_user_home
 from keyboards.inline import (
     FREEZE_REASON_LABELS,
-    admin_education_keyboard,
     admin_keyboard,
-    make_admin_parent_picker_keyboard,
-    make_admin_preview_hub_keyboard,
-    admin_service_context_keyboard,
-    admin_service_monitoring_keyboard,
     admin_service_keyboard,
     admin_students_keyboard,
     back_to_admin_keyboard,
     cancel_fsm_keyboard,
     make_admin_context_keyboard,
+    make_admin_education_keyboard,
+    make_admin_parent_picker_keyboard,
+    make_admin_preview_hub_keyboard,
     make_back_button_keyboard,
     make_brand_tone_keyboard,
     make_freeze_queue_keyboard,
@@ -63,9 +61,7 @@ from utils.ui_text import (
     ADMIN_EDUCATION_CATEGORY_TEXT,
     ADMIN_HOME_TEXT,
     ADMIN_NO_REGISTERED_STUDENTS_TEXT,
-    ADMIN_SERVICE_CONTEXT_TEXT,
     ADMIN_SERVICE_CATEGORY_TEXT,
-    ADMIN_SERVICE_MONITORING_TEXT,
     ADMIN_STUDENTS_CATEGORY_TEXT,
     ADMIN_SYNC_ERROR_HINT,
     ADMIN_SYNC_IN_PROGRESS_TEXT,
@@ -77,20 +73,25 @@ router = Router()
 
 ADMIN_PREVIEW_PARENT_PAGE_SIZE = 5
 
-ADMIN_CATEGORY_VIEWS = {
-    "students": (
-        ADMIN_STUDENTS_CATEGORY_TEXT,
-        admin_students_keyboard,
-    ),
-    "education": (
-        ADMIN_EDUCATION_CATEGORY_TEXT,
-        admin_education_keyboard,
-    ),
-    "service": (
-        ADMIN_SERVICE_CATEGORY_TEXT,
-        admin_service_keyboard,
-    ),
-}
+def _get_admin_category_views() -> dict:
+    """Build category views dict; education keyboard is built with freeze count = 0 as default."""
+    return {
+        "students": (
+            ADMIN_STUDENTS_CATEGORY_TEXT,
+            admin_students_keyboard,
+        ),
+        "education": (
+            ADMIN_EDUCATION_CATEGORY_TEXT,
+            make_admin_education_keyboard(0),
+        ),
+        "service": (
+            ADMIN_SERVICE_CATEGORY_TEXT,
+            admin_service_keyboard,
+        ),
+    }
+
+
+ADMIN_CATEGORY_VIEWS = _get_admin_category_views()
 
 
 def _return_view_from_source(source: str | None) -> str:
@@ -161,7 +162,13 @@ async def render_admin_home(message: types.Message, db: Database):
     )
 
 
-async def render_admin_category(message: types.Message, category: str):
+async def render_admin_category(message: types.Message, category: str, db: Database | None = None):
+    if category == "education" and db is not None:
+        pending = await db.get_pending_freeze_lessons()
+        keyboard = make_admin_education_keyboard(len(pending or []))
+        await message.edit_text(ADMIN_EDUCATION_CATEGORY_TEXT, reply_markup=keyboard)
+        return
+
     view = ADMIN_CATEGORY_VIEWS.get(category)
     if not view:
         await message.edit_text("⚠️ Раздел не найден.", reply_markup=back_to_admin_keyboard)
@@ -175,21 +182,23 @@ async def render_brand_tone_settings(message: types.Message):
     current_tone = get_brand_tone()
     await message.edit_text(
         build_brand_tone_text(current_tone),
-        reply_markup=make_brand_tone_keyboard(current_tone, back_callback="admin:service:context"),
+        reply_markup=make_brand_tone_keyboard(current_tone, back_callback="admin:cat:service"),
     )
 
 
 async def render_admin_service_monitoring(message: types.Message):
+    """Kept for backward compatibility — now renders the flat service screen."""
     await message.edit_text(
-        ADMIN_SERVICE_MONITORING_TEXT,
-        reply_markup=admin_service_monitoring_keyboard,
+        ADMIN_SERVICE_CATEGORY_TEXT,
+        reply_markup=admin_service_keyboard,
     )
 
 
 async def render_admin_service_context(message: types.Message):
+    """Kept for backward compatibility — now renders the flat service screen."""
     await message.edit_text(
-        ADMIN_SERVICE_CONTEXT_TEXT,
-        reply_markup=admin_service_context_keyboard,
+        ADMIN_SERVICE_CATEGORY_TEXT,
+        reply_markup=admin_service_keyboard,
     )
 
 
@@ -518,37 +527,24 @@ async def back_to_admin(callback_query: types.CallbackQuery, state: FSMContext, 
     await callback_query.answer()
 
 
-@router.callback_query(lambda c: c.data.startswith('admin:cat:'))
-async def admin_open_category(callback_query: types.CallbackQuery):
+_ADMIN_TOP_LEVEL_CATEGORIES = {"admin:cat:students", "admin:cat:education", "admin:cat:service"}
+
+
+@router.callback_query(lambda c: c.data in _ADMIN_TOP_LEVEL_CATEGORIES)
+async def admin_open_category(callback_query: types.CallbackQuery, db: Database):
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
 
-    category = callback_query.data.split(':', 2)[2]
-    view = ADMIN_CATEGORY_VIEWS.get(category)
-    if not view:
+    # Strip to top-level category (e.g. "admin:cat:education" → "education")
+    parts = callback_query.data.split(':', 2)
+    category = parts[2] if len(parts) > 2 else ""
+
+    if not category:
         await callback_query.answer("Раздел не найден.", show_alert=True)
         return
 
-    await render_admin_category(callback_query.message, category)
-    await callback_query.answer()
-
-
-@router.callback_query(lambda c: c.data == "admin:service:monitoring")
-async def admin_service_monitoring(callback_query: types.CallbackQuery):
-    if not _is_admin(callback_query.from_user.id):
-        await callback_query.answer()
-        return
-    await render_admin_service_monitoring(callback_query.message)
-    await callback_query.answer()
-
-
-@router.callback_query(lambda c: c.data == "admin:service:context")
-async def admin_service_context(callback_query: types.CallbackQuery):
-    if not _is_admin(callback_query.from_user.id):
-        await callback_query.answer()
-        return
-    await render_admin_service_context(callback_query.message)
+    await render_admin_category(callback_query.message, category, db=db)
     await callback_query.answer()
 
 
@@ -560,9 +556,9 @@ async def admin_sync_callback(callback_query: types.CallbackQuery, db: Database)
 
     parts = callback_query.data.split(':', 2)
     source = parts[2] if len(parts) > 2 else None
-    back_target = "admin:service:monitoring" if source == "monitoring" else _return_view_from_source(source)
+    back_target = "admin:cat:service" if source in {"monitoring", "service"} else _return_view_from_source(source)
     back_keyboard = make_back_button_keyboard(
-        "◀️ К мониторингу" if back_target == "admin:service:monitoring" else "◀️ Вернуться",
+        "◀️ К сервису" if back_target == "admin:cat:service" else "◀️ Вернуться",
         back_target,
     )
 
@@ -596,7 +592,7 @@ async def admin_calendar_report(callback_query: types.CallbackQuery):
 
     await callback_query.message.edit_text(
         "\n".join(["📋 <b>Краткий отчёт синхронизации</b>", *_build_calendar_sync_snapshot_lines()]) or "Отчёта пока нет.",
-        reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
     )
     await callback_query.answer()
 

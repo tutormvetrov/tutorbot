@@ -66,24 +66,13 @@ def _btn(text: str, callback_data: str) -> InlineKeyboardButton:
 
 
 def _service_navigation_keyboard(active_view: str) -> InlineKeyboardMarkup:
-    monitor_label = "• Мониторинг" if active_view == "monitoring" else "Мониторинг"
-    context_label = "• Контекст и проект" if active_view == "context" else "Контекст и проект"
     rows = [
-        [_btn(monitor_label, "admin:service:monitoring"), _btn(context_label, "admin:service:context")],
-    ]
-
-    if active_view == "monitoring":
-        rows.append([
-            _btn("🔄 Синхронизировать Calendar", "admin:sync:monitoring"),
+        [
+            _btn("🔄 Синхронизировать Calendar", "admin:sync:service"),
             _btn("📋 Отчёт синхронизации", "admin:calendar_report"),
-        ])
-    else:
-        rows.append([
-            _btn(f"🎨 Тональность: {brand_tone_label(get_brand_tone())}", "admin:brand_tone"),
-            _btn("📝 Рабочие заметки", "admin:notes"),
-        ])
-
-    rows.append([_btn("◀️ К сервису", "admin:cat:service")])
+        ],
+        [_btn("◀️ К сервису", "admin:cat:service")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -181,21 +170,11 @@ async def _render_context_screen(callback_query: types.CallbackQuery, db: Databa
     )
 
 
-@router.callback_query(lambda c: c.data in {"admin:health", "admin:service:monitoring"}, StateFilter("*"))
+@router.callback_query(lambda c: c.data == "admin:health", StateFilter("*"))
 async def admin_health(callback_query: types.CallbackQuery, db: Database):
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
 
     await _render_monitoring_screen(callback_query, db)
-    await callback_query.answer()
-
-
-@router.callback_query(lambda c: c.data == "admin:service:context", StateFilter("*"))
-async def admin_service_context(callback_query: types.CallbackQuery, db: Database):
-    if not _is_admin(callback_query.from_user.id):
-        await callback_query.answer()
-        return
-
-    await _render_context_screen(callback_query, db)
     await callback_query.answer()

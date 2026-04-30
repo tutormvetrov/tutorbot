@@ -11,14 +11,15 @@ if str(ROOT) not in sys.path:
 from keyboards.inline import (
     admin_education_keyboard,
     admin_keyboard,
-    admin_service_context_keyboard,
     admin_service_keyboard,
     admin_students_keyboard,
+    make_admin_education_keyboard,
     make_admin_parent_card_keyboard,
     make_admin_parent_danger_keyboard,
     make_admin_parents_list_keyboard,
     make_admin_student_card_keyboard,
     make_admin_students_list_keyboard,
+    make_admin_today_keyboard,
     make_contacts_keyboard,
     make_first_lesson_invite_keyboard,
     make_homework_item_keyboard,
@@ -337,20 +338,21 @@ class KeyboardHelpersTest(unittest.TestCase):
         student_texts = [button.text for row in admin_students_keyboard.inline_keyboard for button in row]
         education_texts = [button.text for row in admin_education_keyboard.inline_keyboard for button in row]
         service_texts = [button.text for row in admin_service_keyboard.inline_keyboard for button in row]
-        service_context_texts = [button.text for row in admin_service_context_keyboard.inline_keyboard for button in row]
 
         self.assertIn("📋 Список учеников", student_texts)
         self.assertIn("👨‍👩‍👧 Родители", student_texts)
         self.assertIn("👤 Добавить ученика", student_texts)
-        self.assertIn("🏫 Формат занятий", student_texts)
-        self.assertIn("🗣 Обращение", student_texts)
+        self.assertNotIn("🏫 Формат занятий", student_texts)
+        self.assertNotIn("🗣 Обращение", student_texts)
         self.assertNotIn("🗑 Деактивировать", student_texts)
         self.assertNotIn("💀 Полный сброс", student_texts)
-        self.assertIn("➕ Добавить занятие", education_texts)
-        self.assertIn("🗑 Удалить занятие", education_texts)
-        self.assertIn("📊 Мониторинг", service_texts)
-        self.assertIn("🧠 Контекст и проект", service_texts)
-        self.assertIn("📝 Рабочие заметки", service_context_texts)
+        # Education keyboard is now verb-style
+        self.assertNotIn("📊 Мониторинг", service_texts)
+        self.assertNotIn("🧠 Контекст и проект", service_texts)
+        # Flat service keyboard has individual items
+        self.assertIn("🏥 Здоровье бота", service_texts)
+        self.assertIn("📝 Рабочие заметки", service_texts)
+        self.assertIn("🧪 Просмотр ролей", service_texts)
 
     def test_homework_item_keyboard_keeps_detail_and_attachment_actions(self):
         active_kb = make_homework_item_keyboard(42, "active")
@@ -386,19 +388,79 @@ class KeyboardHelpersTest(unittest.TestCase):
         self.assertIn("lesson_delete:42:db", callbacks)
         self.assertIn("lesson_delete:42:calendar", callbacks)
 
-    def test_admin_home_keyboard_contains_only_high_level_navigation(self):
+    def test_admin_home_keyboard_has_today_and_inbox(self):
         texts = [button.text for row in admin_keyboard.inline_keyboard for button in row]
+        callbacks = [button.callback_data for row in admin_keyboard.inline_keyboard for button in row if button.callback_data]
         self.assertEqual(
             texts,
             [
+                "🎯 Сегодня",
                 "👥 Ученики",
                 "📚 Учебный процесс",
+                "💬 Inbox",
                 "📢 Рассылка",
                 "⚙️ Сервис",
-                "🧪 Просмотр ролей",
                 "◀️ Главное меню",
             ],
         )
+        self.assertIn("admin:today", callbacks)
+        self.assertIn("admin:inbox", callbacks)
+        self.assertNotIn("🧪 Просмотр ролей", texts)
+
+    def test_admin_service_keyboard_is_flat(self):
+        service_texts = [button.text for row in admin_service_keyboard.inline_keyboard for button in row]
+        service_callbacks = [button.callback_data for row in admin_service_keyboard.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("🏥 Здоровье бота", service_texts)
+        self.assertIn("🔄 Синхронизация Calendar", service_texts)
+        self.assertIn("🧭 Алиасы Calendar", service_texts)
+        self.assertIn("📋 Отчёт синхронизации", service_texts)
+        self.assertIn("🎨 Тональность бренда", service_texts)
+        self.assertIn("📝 Рабочие заметки", service_texts)
+        self.assertIn("🧪 Просмотр ролей", service_texts)
+        self.assertNotIn("📊 Мониторинг", service_texts)
+        self.assertNotIn("🧠 Контекст и проект", service_texts)
+
+    def test_admin_students_keyboard_has_no_format_or_speech_buttons(self):
+        student_texts = [button.text for row in admin_students_keyboard.inline_keyboard for button in row]
+        self.assertNotIn("🏫 Формат занятий", student_texts)
+        self.assertNotIn("🗣 Обращение", student_texts)
+        self.assertIn("📋 Список учеников", student_texts)
+        self.assertIn("👨‍👩‍👧 Родители", student_texts)
+        self.assertIn("👥 Пары", student_texts)
+        self.assertIn("👤 Добавить ученика", student_texts)
+
+    def test_make_admin_education_keyboard_with_freeze_count(self):
+        kb_zero = make_admin_education_keyboard(0)
+        kb_three = make_admin_education_keyboard(3)
+        texts_zero = [button.text for row in kb_zero.inline_keyboard for button in row]
+        texts_three = [button.text for row in kb_three.inline_keyboard for button in row]
+        callbacks_zero = [button.callback_data for row in kb_zero.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("❄️ Заявки на заморозку", texts_zero)
+        self.assertNotIn("❄️ Заявки на заморозку (0)", texts_zero)
+        self.assertIn("❄️ Заявки на заморозку (3)", texts_three)
+        self.assertIn("admin:freezes", callbacks_zero)
+        self.assertIn("💳 Тарифы", texts_zero)
+
+    def test_make_admin_today_keyboard_exposes_expected_callbacks(self):
+        snapshot = {
+            "lessons_today": [],
+            "unpaid_count": 2,
+            "missing_homework_count": 1,
+            "pending_freeze_count": 3,
+            "unanswered_replies_count": 0,
+        }
+        kb = make_admin_today_keyboard(snapshot)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        texts = [button.text for row in kb.inline_keyboard for button in row]
+
+        self.assertIn("admin:today:lessons", callbacks)
+        self.assertIn("admin:today:unpaid", callbacks)
+        self.assertIn("admin:today:missing_hw", callbacks)
+        self.assertIn("admin:freezes", callbacks)
+        self.assertIn("admin:inbox", callbacks)
+        self.assertIn("admin:home", callbacks)
+        self.assertIn("❄️ Заявки на заморозку (3)", texts)
 
 
 if __name__ == "__main__":

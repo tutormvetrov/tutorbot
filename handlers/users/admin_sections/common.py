@@ -164,7 +164,7 @@ ADMIN_STUDENT_PICKER_PAGE_SIZE = 5
 
 def admin_picker_back_view(flow: str) -> str:
     if flow == "calendar_aliases":
-        return "admin:service:monitoring"
+        return "admin:cat:service"
     if flow in {"preview_student", "preview_parent"}:
         return "admin:preview"
     return "admin:cat:education"
@@ -292,16 +292,10 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         await _render_admin_homework_list(target, db)
         return True
 
-    if view == "admin:service:monitoring":
+    if view in {"admin:service:monitoring", "admin:service:context", "admin:cat:service"}:
         from handlers.users.admin import render_admin_service_monitoring
 
         await render_admin_service_monitoring(target)
-        return True
-
-    if view == "admin:service:context":
-        from handlers.users.admin import render_admin_service_context
-
-        await render_admin_service_context(target)
         return True
 
     return False

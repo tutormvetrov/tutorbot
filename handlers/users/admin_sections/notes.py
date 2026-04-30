@@ -22,7 +22,7 @@ CLAUDE_DOC_FILE = PROJECT_ROOT / "CLAUDE.md"
 AGENT_CONTEXT_FILE = PROJECT_ROOT / "AGENT_CONTEXT.md"
 DEBUG_CONTEXT_LOG_FILE = PROJECT_ROOT / "data" / "debug_context.jsonl"
 DEBUG_MEDIA_DIR = PROJECT_ROOT / "data" / "debug_media"
-SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К контексту", "admin:service:context")
+SERVICE_BACK_KEYBOARD = make_back_button_keyboard("◀️ К сервису", "admin:cat:service")
 
 
 def _is_admin(user_id: int) -> bool:

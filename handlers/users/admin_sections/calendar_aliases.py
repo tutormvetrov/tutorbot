@@ -128,7 +128,7 @@ async def admin_calendar_aliases(callback_query: types.CallbackQuery, state: FSM
     if not students:
         await callback_query.message.edit_text(
             "🧭 <b>Алиасы Calendar</b>\n\nНет активных учеников.",
-            reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+            reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
         )
         await callback_query.answer()
         return
@@ -188,7 +188,7 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
     student_id = data.get("student_id")
     if not student_id:
         await state.clear()
-        await message.answer("⚠️ Ученик не выбран.", reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"))
+        await message.answer("⚠️ Ученик не выбран.", reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"))
         return
 
     raw_text = (message.text or "").strip()
@@ -218,7 +218,7 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
         f"✅ <b>Правила сохранены</b> для {name}.\n\n"
         f"Способ обновления: <b>{'полная замена' if replace_mode else 'добавление'}</b>\n"
         f"Всего активных правил: <b>{len(merged_items)}</b>",
-        reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
     )
     try:
         report = await sync_calendar_to_db(db)
@@ -226,13 +226,13 @@ async def admin_calendar_aliases_text(message: types.Message, state: FSMContext,
         logger.error("Ошибка автосинхронизации Calendar после сохранения алиасов: %s", exc)
         await message.answer(
             f"⚠️ Автосинхронизация не удалась:\n<code>{_q(exc)}</code>",
-            reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+            reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
         )
         return
 
     await message.answer(
         format_sync_report_html(report),
-        reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
     )
 
 
@@ -249,6 +249,6 @@ async def admin_calendar_aliases_clear(callback_query: types.CallbackQuery, stat
     await state.clear()
     await callback_query.message.edit_text(
         f"🗑 <b>Алиасы очищены</b> для {name}.",
-        reply_markup=make_back_button_keyboard("◀️ К мониторингу", "admin:service:monitoring"),
+        reply_markup=make_back_button_keyboard("◀️ К сервису", "admin:cat:service"),
     )
     await callback_query.answer()
