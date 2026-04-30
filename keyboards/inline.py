@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from utils.brand import BRAND_TONE_LABELS
@@ -156,9 +160,10 @@ def make_homework_list_keyboard(items: list, status: str) -> InlineKeyboardMarku
 
 
 def make_parent_home_keyboard(children: list[dict]) -> InlineKeyboardMarkup:
+    from utils.ui_text import child_traffic_light
     rows = []
     for child in children:
-        icon = "✅" if child.get("link_status") == "linked" else "⏳"
+        icon = child_traffic_light(child)
         rows.append([_btn(f"{icon} {child.get('child_label') or 'Ребёнок'}", f"parent:child:{child['link_id']}")])
     rows.extend(parent_main_keyboard.inline_keyboard)
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1038,4 +1043,103 @@ def make_brand_tone_keyboard(current_tone: str, back_callback: str = "admin:serv
         prefix = "• " if tone == current_tone else ""
         rows.append([_btn(f"{prefix}{label.capitalize()}", f"admin:brand_tone_set:{tone}")])
     rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─── Admin Inbox ──────────────────────────────────────────────────────────────
+
+_KIND_LABELS: dict[str, str] = {
+    "reply": "по сообщению",
+    "freeze_request": "заморозка",
+    "first_contact": "новый родитель",
+}
+
+
+def _inbox_event_label(event) -> str:
+    payload = event.get("payload") or {}
+    if isinstance(payload, str):
+        import json
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    name = (payload.get("full_name") or "—")
+    if len(name) > 15:
+        name = name[:14] + "…"
+    context = payload.get("context") or event.get("kind") or "—"
+    context_labels = {
+        "homework": "по ДЗ",
+        "payment": "по оплате",
+        "general": "общий",
+        "freeze": "заморозка",
+        "lesson": "по уроку",
+        "broadcast": "по рассылке",
+        "teacher_message": "по сообщению",
+        "review": "по отзыву",
+        "first_contact": "новый родитель",
+    }
+    context_label = context_labels.get(context, context)
+    created_at = event.get("created_at")
+    if isinstance(created_at, datetime):
+        time_str = created_at.strftime("%H:%M")
+    else:
+        time_str = "—"
+    handled = event.get("handled_at")
+    prefix = "📨" if handled else "🆕"
+    return f"{prefix} {time_str} · {name} ({context_label})"
+
+
+def make_admin_inbox_keyboard(events: list) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    today_events = []
+    yesterday_events = []
+    older_events = []
+
+    now = datetime.now()
+    today_date = now.date()
+    yesterday_date = today_date - timedelta(days=1)
+
+    for event in events:
+        created_at = event.get("created_at")
+        if isinstance(created_at, datetime):
+            event_date = created_at.date()
+        else:
+            event_date = None
+
+        if event_date == today_date:
+            today_events.append(event)
+        elif event_date == yesterday_date:
+            yesterday_events.append(event)
+        else:
+            older_events.append(event)
+
+    if today_events:
+        rows.append([_btn("🆕 Сегодня", "admin:inbox:noop")])
+        for event in today_events:
+            rows.append([_btn(_inbox_event_label(event), f"admin:inbox:item:{event['id']}")])
+
+    if yesterday_events:
+        rows.append([_btn("📬 Вчера", "admin:inbox:noop")])
+        for event in yesterday_events:
+            rows.append([_btn(_inbox_event_label(event), f"admin:inbox:item:{event['id']}")])
+
+    if older_events:
+        rows.append([_btn("📁 Ранее", "admin:inbox:noop")])
+        for event in older_events:
+            rows.append([_btn(_inbox_event_label(event), f"admin:inbox:item:{event['id']}")])
+
+    if not events:
+        rows.append([_btn("✅ Нет непрочитанных", "admin:inbox:noop")])
+
+    rows.append([_btn("✓ Отметить всё прочитанным", "admin:inbox:mark_all_read")])
+    rows.append([_btn("◀️ К панели", "admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_inbox_item_keyboard(event_id: int, kind: str) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([_btn("✉️ Ответить", f"admin:inbox:reply:{event_id}")])
+    rows.append([_btn("✓ Закрыть", f"admin:inbox:item:{event_id}:close")])
+    rows.append([_btn("◀️ К Inbox", "admin:inbox")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

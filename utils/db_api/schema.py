@@ -679,6 +679,34 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_learning_plan_schema", exc)
             return
 
+    async def create_table_admin_inbox(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS admin_inbox (
+                id SERIAL PRIMARY KEY,
+                kind TEXT NOT NULL,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMP DEFAULT now(),
+                read_at TIMESTAMP,
+                handled_at TIMESTAMP,
+                handled_by BIGINT
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS admin_inbox_unread_idx
+            ON admin_inbox (created_at DESC)
+            WHERE handled_at IS NULL;
+            """,
+            execute=True,
+        )
+
+    async def migrate_admin_inbox(self):
+        try:
+            await self.create_table_admin_inbox()
+        except Exception as exc:
+            self._log_migration_failure("migrate_admin_inbox", exc)
+            return
+
     async def migrate_default_pricing_rate(self):
         try:
             existing = await self.execute(
@@ -842,6 +870,15 @@ class DatabaseSchemaMixin:
                 "created_at",
                 "updated_at",
             },
+            "admin_inbox": {
+                "id",
+                "kind",
+                "payload",
+                "created_at",
+                "read_at",
+                "handled_at",
+                "handled_by",
+            },
         }
 
         rows = await self.execute(
@@ -901,4 +938,5 @@ class DatabaseSchemaMixin:
         await self.migrate_student_group_member_invites()
         await self.migrate_learning_plan_schema()
         await self.migrate_default_pricing_rate()
+        await self.migrate_admin_inbox()
         await self.verify_required_schema()

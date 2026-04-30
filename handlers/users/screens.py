@@ -1,4 +1,5 @@
 from aiogram import types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from keyboards.inline import (
     back_to_menu_keyboard,
@@ -20,6 +21,7 @@ from utils.ui_text import (
     build_parent_home_text,
     build_profile_text,
     build_student_home_text,
+    compute_student_cta,
 )
 
 
@@ -57,17 +59,41 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
         next_lesson = lessons[0]["lesson_date"] if lessons and lessons[0].get("lesson_date") else None
         homework = list(await db.get_student_homework(learning_user_id, "active") or [])
         balance = await db.get_student_lesson_balance(learning_user_id)
-        return apply_preview_to_payload(
-            build_student_home_text(
-                user,
-                balance,
-                active_homework_count=len(homework),
-                next_lesson=next_lesson,
-                pair=pair,
-            ),
-            student_main_keyboard,
-            preview,
+
+        from datetime import datetime
+        overdue_count = sum(
+            1 for hw in homework
+            if hw.get("deadline") and hw["deadline"] < datetime.now() and hw.get("status") == "active"
         )
+
+        cta = compute_student_cta(user, balance, next_lesson, homework, overdue_count)
+
+        home_text = build_student_home_text(
+            user,
+            balance,
+            active_homework_count=len(homework),
+            next_lesson=next_lesson,
+            pair=pair,
+        )
+        if cta:
+            home_text = home_text + "\n\n" + cta["text"]
+
+        if cta:
+            cta_url = cta.get("button_url")
+            if cta_url:
+                cta_btn = InlineKeyboardButton(text=cta["button_label"], url=cta_url)
+            else:
+                cta_btn = InlineKeyboardButton(
+                    text=cta["button_label"],
+                    callback_data=cta.get("button_callback", "back_to_menu"),
+                )
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[cta_btn]] + list(student_main_keyboard.inline_keyboard)
+            )
+        else:
+            keyboard = student_main_keyboard
+
+        return apply_preview_to_payload(home_text, keyboard, preview)
 
     return apply_preview_to_payload(MAIN_MENU_TEXT, student_main_keyboard, preview)
 

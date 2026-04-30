@@ -615,12 +615,27 @@ class DatabaseUserMixin:
                       AND l.status = 'active'
                       AND l.lesson_date IS NOT NULL
                 ) AS next_lesson_date,
+                (
+                    SELECT MAX(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = sp.student_id
+                      AND l.lesson_date IS NOT NULL
+                      AND l.lesson_date < now()
+                ) AS last_lesson_date,
                 COALESCE((
                     SELECT COUNT(*)::int
                     FROM homework h
                     WHERE h.student_id = sp.student_id
                       AND h.status = 'active'
                 ), 0) AS active_homework_count,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM homework h
+                    WHERE h.student_id = sp.student_id
+                      AND h.status = 'active'
+                      AND h.deadline IS NOT NULL
+                      AND h.deadline < now()
+                ), 0) AS overdue_homework_count,
                 COALESCE((
                     SELECT SUM(p.lessons_remaining)::int
                     FROM payments p
@@ -660,12 +675,27 @@ class DatabaseUserMixin:
                       AND l.status = 'active'
                       AND l.lesson_date IS NOT NULL
                 ) AS next_lesson_date,
+                (
+                    SELECT MAX(l.lesson_date)
+                    FROM lessons l
+                    WHERE l.student_id = sp.student_id
+                      AND l.lesson_date IS NOT NULL
+                      AND l.lesson_date < now()
+                ) AS last_lesson_date,
                 COALESCE((
                     SELECT COUNT(*)::int
                     FROM homework h
                     WHERE h.student_id = sp.student_id
                       AND h.status = 'active'
                 ), 0) AS active_homework_count,
+                COALESCE((
+                    SELECT COUNT(*)::int
+                    FROM homework h
+                    WHERE h.student_id = sp.student_id
+                      AND h.status = 'active'
+                      AND h.deadline IS NOT NULL
+                      AND h.deadline < now()
+                ), 0) AS overdue_homework_count,
                 COALESCE((
                     SELECT SUM(p.lessons_remaining)::int
                     FROM payments p
