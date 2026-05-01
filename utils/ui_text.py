@@ -1927,11 +1927,19 @@ def build_admin_parent_card_text(parent, children: list[dict], payments_as_payer
     return "\n".join(lines)
 
 
+def _lesson_student_line(lesson: dict) -> str:
+    pair_title = (lesson.get("pair_title") or "").strip()
+    name = html.quote(lesson.get("full_name") or "—")
+    if pair_title:
+        return f"👥 Пара: <b>{html.quote(pair_title)}</b>"
+    return f"👤 Ученик: <b>{name}</b>"
+
+
 def build_teacher_lesson_followup_text(lesson: dict) -> str:
     return "\n".join([
         "🧾 <b>Урок завершился</b>",
         "",
-        f"👤 Ученик: <b>{html.quote(lesson.get('full_name') or '—')}</b>",
+        _lesson_student_line(lesson),
         f"📅 Урок: <b>{html.quote(format_datetime(lesson.get('lesson_date')))}</b>",
         f"{lesson_format_icon(lesson.get('lesson_format'))} Формат: <b>{lesson_format_label(lesson.get('lesson_format'))}</b>",
         "",
@@ -1946,7 +1954,7 @@ def build_teacher_bookmark_reminder_text(lesson: dict) -> str:
     lines = [
         "📖 <b>Закладка перед уроком</b>",
         "",
-        f"👤 Ученик: <b>{html.quote(lesson.get('full_name') or '—')}</b>",
+        _lesson_student_line(lesson),
         f"📅 Урок: <b>{html.quote(format_datetime(lesson.get('lesson_date')))}</b>",
         f"{lesson_format_icon(lesson.get('lesson_format'))} Формат: <b>{lesson_format_label(lesson.get('lesson_format'))}</b>",
         f"⏰ Напоминание: <b>{lead_label}</b>",

@@ -392,6 +392,32 @@ class UITextTest(unittest.TestCase):
         self.assertIn("за 1 час", reminder_text)
         self.assertIn("Cosmopolite 1, page 69.", reminder_text)
 
+    def test_teacher_reminders_show_pair_title(self):
+        lesson = {
+            "full_name": "Безруков Даниил",
+            "lesson_date": datetime(2026, 5, 1, 15, 30),
+            "lesson_format": "online",
+            "pair_title": "Даниил и Мария",
+            "current_bookmark_state": "empty",
+        }
+        followup = build_teacher_lesson_followup_text(lesson)
+        bookmark = build_teacher_bookmark_reminder_text(lesson)
+        self.assertIn("👥 Пара: <b>Даниил и Мария</b>", followup)
+        self.assertIn("👥 Пара: <b>Даниил и Мария</b>", bookmark)
+        self.assertNotIn("👤 Ученик", followup)
+        self.assertNotIn("👤 Ученик", bookmark)
+
+    def test_teacher_reminders_solo_student(self):
+        lesson = {
+            "full_name": "Иван Петров",
+            "lesson_date": datetime(2026, 5, 1, 15, 30),
+            "lesson_format": "online",
+            "current_bookmark_state": "empty",
+        }
+        followup = build_teacher_lesson_followup_text(lesson)
+        self.assertIn("👤 Ученик: <b>Иван Петров</b>", followup)
+        self.assertNotIn("👥 Пара", followup)
+
     def test_broadcast_preview_and_recipient_texts_keep_message_shape(self):
         preview = build_broadcast_preview_text(
             "⚠️ <b>Внимание</b>\n\nСегодняшнего урока не будет."

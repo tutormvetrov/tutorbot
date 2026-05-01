@@ -47,9 +47,17 @@ class DatabaseLessonMixin:
                 l.status,
                 u.full_name,
                 COALESCE(u.lesson_format, 'online') AS lesson_format,
-                COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes
+                COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes,
+                g.title AS pair_title
             FROM lessons l
             JOIN users u ON u.telegram_id = l.student_id
+            LEFT JOIN student_groups g
+                ON g.is_active = true
+                AND (g.primary_student_id = l.student_id
+                     OR EXISTS (
+                         SELECT 1 FROM student_group_members sm
+                         WHERE sm.group_id = g.id AND sm.student_id = l.student_id
+                     ))
             WHERE l.lesson_date IS NOT NULL
               AND l.status IN ('active', 'completed')
               AND COALESCE(l.teacher_followup_sent, false) = false
@@ -81,9 +89,17 @@ class DatabaseLessonMixin:
                 COALESCE(u.current_bookmark_state, 'empty') AS current_bookmark_state,
                 u.current_bookmark_text,
                 u.current_bookmark_updated_at,
-                u.current_bookmark_lesson_id
+                u.current_bookmark_lesson_id,
+                g.title AS pair_title
             FROM lessons l
             JOIN users u ON u.telegram_id = l.student_id
+            LEFT JOIN student_groups g
+                ON g.is_active = true
+                AND (g.primary_student_id = l.student_id
+                     OR EXISTS (
+                         SELECT 1 FROM student_group_members sm
+                         WHERE sm.group_id = g.id AND sm.student_id = l.student_id
+                     ))
             WHERE l.status = 'active'
               AND l.lesson_date IS NOT NULL
               AND COALESCE(l.teacher_pre_lesson_note_sent, false) = false
