@@ -889,13 +889,31 @@ async def process_contacts(callback_query: types.CallbackQuery, db: Database):
 @router.callback_query(lambda c: c.data == 'materials')
 async def process_materials(callback_query: types.CallbackQuery, db: Database):
     info = load_teacher_info()
-    _, _, preview = await _resolve_actor_context(db, callback_query.from_user.id)
-    materials_url = _get_materials_url(info)
+    user_id, user, preview = await _resolve_actor_context(db, callback_query.from_user.id)
     website_url = _get_project_site_url(info)
+    resources: list = []
+    if user:
+        resource_owner_id = user_id
+        if user.get("role") == "student":
+            resource_owner_id = await _get_learning_student_id(db, user_id)
+        list_resources = getattr(db, "list_student_resources", None)
+        if callable(list_resources):
+            try:
+                resources = list(await list_resources(resource_owner_id) or [])
+            except Exception:
+                logger.warning("Failed to load student_resources", exc_info=True)
+                resources = []
+    else:
+        list_global = getattr(db, "list_global_resources", None)
+        if callable(list_global):
+            try:
+                resources = list(await list_global() or [])
+            except Exception:
+                resources = []
     await _edit_text_for_actor(
         callback_query.message,
-        build_materials_text(materials_url=materials_url, website_url=website_url),
-        make_materials_keyboard(materials_url=materials_url, website_url=website_url),
+        build_materials_text(resources, website_url=website_url),
+        make_materials_keyboard(resources, website_url=website_url),
         preview,
     )
     await callback_query.answer()

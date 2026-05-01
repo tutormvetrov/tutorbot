@@ -103,3 +103,9 @@ class StudentReply(StatesGroup):
 class AdminCalendarAliases(StatesGroup):
     waiting_for_student = State()
     waiting_for_aliases = State()
+
+
+class AdminAddResource(StatesGroup):
+    waiting_for_url = State()
+    waiting_for_label = State()
+    waiting_for_primary_choice = State()

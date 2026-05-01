@@ -26,7 +26,7 @@ from tests.helpers import DummyBot, DummyMessage
 
 class FakeDB:
     def __init__(self, *, user=None, role="student", balance=2, lessons=None, homework=None,
-                 students=None, pending_freezes=None, today_snapshot=None):
+                 students=None, pending_freezes=None, today_snapshot=None, resources=None):
         self._user = user
         self._role = role
         self._balance = balance
@@ -34,6 +34,7 @@ class FakeDB:
         self._homework = homework if homework is not None else []
         self._students = students if students is not None else []
         self._pending_freezes = pending_freezes if pending_freezes is not None else []
+        self._resources = resources if resources is not None else []
         self._today_snapshot = today_snapshot or {
             "lessons_today": [],
             "unpaid_count": 0,
@@ -41,6 +42,12 @@ class FakeDB:
             "pending_freeze_count": 0,
             "unanswered_replies_count": 0,
         }
+
+    async def list_student_resources(self, student_id, *, include_global=True):
+        return list(self._resources)
+
+    async def list_global_resources(self):
+        return [r for r in self._resources if r.get("student_id") is None]
 
     async def get_user(self, telegram_id):
         if self._user is None:
@@ -182,13 +189,24 @@ class PlanCommandTest(unittest.IsolatedAsyncioTestCase):
 
 class MaterialsCommandTest(unittest.IsolatedAsyncioTestCase):
     async def test_any_user_sees_materials(self):
+        db = FakeDB(user=None)
         msg = DummyMessage(user_id=100)
-        await command_materials(msg)
+        await command_materials(msg, db)
         self.assertTrue(msg.answers, "Команда /materials должна вызвать message.answer")
 
     async def test_materials_handler_responds(self):
+        db = FakeDB(user=None)
         msg = DummyMessage(user_id=101)
-        await command_materials(msg)
+        await command_materials(msg, db)
+        self.assertEqual(len(msg.answers), 1)
+
+    async def test_materials_for_student_uses_resources(self):
+        resources = [
+            {"id": 1, "student_id": 200, "label": "Курс", "url": "https://docs.google.com/x", "provider": "gdocs", "is_primary": True},
+        ]
+        db = FakeDB(user={"id": 200}, role="student", resources=resources)
+        msg = DummyMessage(user_id=200)
+        await command_materials(msg, db)
         self.assertEqual(len(msg.answers), 1)
 
 

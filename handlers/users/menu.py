@@ -179,14 +179,30 @@ async def command_plan(message: Message, db: Database):
 
 
 @router.message(Command("materials"))
-async def command_materials(message: Message):
+async def command_materials(message: Message, db: Database):
     logger.info(f"Команда /materials от {message.from_user.id}")
     info = load_teacher_info()
-    materials_url = _get_materials_url(info)
     website_url = _get_project_site_url(info)
+    user = await db.get_user(message.from_user.id)
+    resources: list = []
+    if user:
+        owner_id = message.from_user.id
+        if user.get("role") == "student":
+            from handlers.users.callbacks import _get_learning_student_id
+            owner_id = await _get_learning_student_id(db, owner_id)
+        try:
+            resources = list(await db.list_student_resources(owner_id) or [])
+        except Exception:
+            logger.warning("Failed to load student_resources for /materials", exc_info=True)
+            resources = []
+    else:
+        try:
+            resources = list(await db.list_global_resources() or [])
+        except Exception:
+            resources = []
     await message.answer(
-        build_materials_text(materials_url=materials_url, website_url=website_url),
-        reply_markup=make_materials_keyboard(materials_url=materials_url, website_url=website_url),
+        build_materials_text(resources, website_url=website_url),
+        reply_markup=make_materials_keyboard(resources, website_url=website_url),
     )
 
 

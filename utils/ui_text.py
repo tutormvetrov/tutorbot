@@ -592,27 +592,137 @@ def build_pricing_rates_text(rates: list) -> str:
     return "\n".join(lines)
 
 
-def build_materials_text(materials_url: str = "", website_url: str = "") -> str:
+def build_materials_text(
+    resources: list | None = None,
+    *,
+    website_url: str = "",
+) -> str:
+    """Build the «Материалы» screen text.
+
+    `resources` — list of dicts (see `list_student_resources`); empty/None falls
+    back to a soft "not configured" message that points to the website if any.
+    """
+    from html import escape
+
+    from utils.resource_provider import provider_emoji, provider_label
+
+    items = list(resources or [])
     lines = ["📁 <b>Учебные материалы</b>"]
-    if materials_url:
+
+    if not items:
+        if website_url:
+            lines.extend([
+                "",
+                "Материалы и учебники собраны на сайте преподавателя.",
+                "Откройте сайт по кнопке ниже — там же тест уровня и информация о занятиях.",
+            ])
+        else:
+            lines.extend([
+                "",
+                "Ссылка на учебные материалы пока не подключена.",
+                "Напишите преподавателю — он пришлёт нужные файлы напрямую.",
+            ])
+        return "\n".join(lines)
+
+    # If exactly one resource — flat layout, no group headers.
+    if len(items) == 1:
+        r = items[0]
+        emoji = provider_emoji(r.get("provider") or "other")
+        plabel = provider_label(r.get("provider") or "other")
         lines.extend([
             "",
-            "Все учебники и раздаточные материалы собраны в одном облачном хранилище.",
+            f"{emoji} <b>{escape(r.get('label') or plabel)}</b> · {plabel}",
             "Откройте по кнопке ниже — ссылка работает с телефона и компьютера.",
         ])
-    elif website_url:
+        return "\n".join(lines)
+
+    primary = next((r for r in items if r.get("is_primary")), None)
+    globals_ = [r for r in items if r.get("student_id") is None and r is not primary]
+    personal = [r for r in items if r.get("student_id") is not None and r is not primary]
+
+    def _fmt(r: dict) -> str:
+        emoji = provider_emoji(r.get("provider") or "other")
+        plabel = provider_label(r.get("provider") or "other")
+        label = escape(r.get("label") or plabel)
+        return f"   {emoji} <b>{label}</b> · {plabel}"
+
+    if primary:
+        emoji = provider_emoji(primary.get("provider") or "other")
+        plabel = provider_label(primary.get("provider") or "other")
+        label = escape(primary.get("label") or plabel)
         lines.extend([
             "",
-            "Материалы и учебники собраны на сайте преподавателя.",
-            "Откройте сайт по кнопке ниже — там же тест уровня и информация о занятиях.",
+            "⭐ <b>Основное</b>",
+            f"   {emoji} <b>{label}</b> · {plabel}",
         ])
-    else:
-        lines.extend([
-            "",
-            "Ссылка на учебные материалы пока не подключена.",
-            "Напишите преподавателю — он пришлёт нужные файлы напрямую.",
-        ])
+    if globals_:
+        lines.extend(["", "🌍 <b>Общие</b>"])
+        lines.extend(_fmt(r) for r in globals_)
+    if personal:
+        lines.extend(["", "👤 <b>Дополнительно для вас</b>"])
+        lines.extend(_fmt(r) for r in personal)
     return "\n".join(lines)
+
+
+def build_admin_student_resources_text(student_name: str, resources: list) -> str:
+    from html import escape
+
+    from utils.resource_provider import provider_label
+
+    name = escape(student_name or "—")
+    lines = [f"📁 <b>Учебные ссылки</b> · {name}"]
+    if not resources:
+        lines.extend([
+            "",
+            "Лично у этого ученика пока нет ссылок. Глобальные ссылки видны всем.",
+        ])
+        return "\n".join(lines)
+    primary = next((r for r in resources if r.get("is_primary")), None)
+    rest = [r for r in resources if r is not primary]
+    if primary:
+        lines.extend([
+            "",
+            f"⭐ <b>{escape(primary.get('label') or 'Основная')}</b> · {provider_label(primary.get('provider') or 'other')}",
+        ])
+    if rest:
+        lines.extend(["", f"<b>Дополнительные:</b> {len(rest)}"])
+    return "\n".join(lines)
+
+
+def build_admin_global_resources_text(resources: list) -> str:
+    lines = ["🌍 <b>Глобальные учебные ссылки</b>"]
+    if not resources:
+        lines.extend([
+            "",
+            "Глобальных ссылок ещё нет. Их видят все ученики на экране «Материалы».",
+        ])
+        return "\n".join(lines)
+    lines.extend(["", f"Всего: {len(resources)}"])
+    return "\n".join(lines)
+
+
+ADMIN_RESOURCE_PROMPT_URL_TEXT = (
+    "🔗 Пришлите ссылку на учебную папку или документ.\n\n"
+    "Поддерживаются Google Docs/Drive, Filen и любые другие URL — провайдер определится автоматически."
+)
+
+ADMIN_RESOURCE_PROMPT_LABEL_TEXT = (
+    "✏️ Теперь короткое название (3-30 символов).\n\n"
+    "Например: «Курс B1», «Аудио A2», «Грамматика»."
+)
+
+ADMIN_RESOURCE_INVALID_URL_TEXT = (
+    "⚠️ Это не похоже на ссылку. Пришлите URL вида https://… или /отмена."
+)
+
+ADMIN_RESOURCE_INVALID_LABEL_TEXT = (
+    "⚠️ Название должно быть от 1 до 60 символов."
+)
+
+ADMIN_RESOURCE_PROMPT_PRIMARY_TEXT = (
+    "⭐ Сделать эту ссылку основной?\n\n"
+    "У ученика может быть только одна основная ссылка — она показывается крупнее всего."
+)
 
 
 def build_first_lesson_payment_invite_text(

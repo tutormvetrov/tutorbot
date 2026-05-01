@@ -737,6 +737,89 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_admin_inbox", exc)
             return
 
+    async def create_table_student_resources(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_resources (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT REFERENCES users(telegram_id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                url TEXT NOT NULL,
+                provider TEXT NOT NULL DEFAULT 'other',
+                is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT now(),
+                created_by BIGINT
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_resources_student_idx
+            ON student_resources (student_id, is_primary DESC, sort_order);
+            """,
+            execute=True,
+        )
+        # At most one primary per student (NULL student_id treated as the
+        # global owner via COALESCE with sentinel -1, which Telegram never issues).
+        await self.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS student_resources_one_primary_idx
+            ON student_resources (COALESCE(student_id, -1))
+            WHERE is_primary = TRUE;
+            """,
+            execute=True,
+        )
+
+    async def migrate_student_resources(self):
+        try:
+            await self.create_table_student_resources()
+            await self._backfill_student_resources_from_teacher_info()
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_resources", exc)
+            return
+
+    async def _backfill_student_resources_from_teacher_info(self):
+        from data.config import load_teacher_info
+        from utils.resource_provider import detect_provider
+
+        existing = await self.execute(
+            "SELECT 1 FROM student_resources WHERE student_id IS NULL LIMIT 1",
+            fetchval=True,
+        )
+        if existing:
+            return
+
+        info = load_teacher_info() or {}
+        contacts = info.get("contacts", {}) if isinstance(info, dict) else {}
+        candidates = []
+        for key, default_label in (
+            ("materials_url", "Учебные материалы"),
+            ("filen_url", "Filen"),
+        ):
+            url = contacts.get(key) or info.get(key)
+            if not url:
+                continue
+            candidates.append((default_label, str(url).strip()))
+
+        seen_urls = set()
+        primary_assigned = False
+        for label, url in candidates:
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            provider = detect_provider(url)
+            await self.execute(
+                """
+                INSERT INTO student_resources (student_id, label, url, provider, is_primary, sort_order)
+                VALUES (NULL, $1, $2, $3, $4, 0)
+                """,
+                label,
+                url,
+                provider,
+                not primary_assigned,
+                execute=True,
+            )
+            primary_assigned = True
+
     async def migrate_default_pricing_rate(self):
         try:
             existing = await self.execute(
@@ -911,6 +994,17 @@ class DatabaseSchemaMixin:
                 "handled_at",
                 "handled_by",
             },
+            "student_resources": {
+                "id",
+                "student_id",
+                "label",
+                "url",
+                "provider",
+                "is_primary",
+                "sort_order",
+                "created_at",
+                "created_by",
+            },
         }
 
         rows = await self.execute(
@@ -972,4 +1066,5 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_first_lesson_invite()
         await self.migrate_default_pricing_rate()
         await self.migrate_admin_inbox()
+        await self.migrate_student_resources()
         await self.verify_required_schema()

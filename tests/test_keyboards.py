@@ -142,14 +142,23 @@ class KeyboardHelpersTest(unittest.TestCase):
 
         self.assertEqual(callbacks, ["back_to_menu"])
 
-    def test_materials_keyboard_prefers_dedicated_url(self):
-        kb = make_materials_keyboard(materials_url="https://filen.io/example", website_url="https://site")
+    def test_materials_keyboard_renders_resources_with_primary_first(self):
+        resources = [
+            {"id": 1, "student_id": None, "label": "Аудио", "url": "https://filen.io/a", "provider": "filen", "is_primary": False},
+            {"id": 2, "student_id": None, "label": "Курс B1", "url": "https://docs.google.com/c", "provider": "gdocs", "is_primary": True},
+        ]
+        kb = make_materials_keyboard(resources, website_url="https://site")
         urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
         texts = [button.text for row in kb.inline_keyboard for button in row]
+        # Primary should appear before others.
+        self.assertEqual(urls[0], "https://docs.google.com/c")
+        self.assertIn("⭐", texts[0])
+        self.assertIn("https://filen.io/a", urls)
 
-        self.assertIn("https://filen.io/example", urls)
-        self.assertIn("📁 Открыть материалы", texts)
-        self.assertIn("https://site", urls)
+    def test_materials_keyboard_falls_back_to_website_when_empty(self):
+        kb = make_materials_keyboard([], website_url="https://teacher.example")
+        urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
+        self.assertEqual(urls, ["https://teacher.example"])
 
     def test_first_lesson_invite_keyboard_exposes_payment_actions(self):
         kb = make_first_lesson_invite_keyboard()

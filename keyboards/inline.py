@@ -299,6 +299,7 @@ admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📋 Отчёт синхронизации", "admin:calendar_report")],
     [_btn("🎨 Тональность бренда", "admin:brand_tone")],
     [_btn("📝 Рабочие заметки", "admin:notes")],
+    [_btn("🌍 Глобальные учебные ссылки", "admin:resources:global")],
     [_btn("🧪 Просмотр ролей", "admin:preview")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
@@ -548,6 +549,7 @@ def make_admin_student_actions_keyboard(telegram_id: int, page: int) -> InlineKe
         ],
         [_btn("📚 Задать ДЗ", f"admin:quick:add_homework:{telegram_id}:{page}:actions")],
         [_btn("📌 Учебный план", f"admin:study_plan:{telegram_id}:{page}:actions")],
+        [_btn("📁 Учебные ссылки", f"admin:resources:student:{telegram_id}:{page}")],
         [_btn("◀️ К карточке ученика", f"admin:student_card:{telegram_id}:{page}")],
     ])
 
@@ -825,12 +827,35 @@ def make_schedule_keyboard(calendar_url: str = "") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_materials_keyboard(materials_url: str = "", website_url: str = "") -> InlineKeyboardMarkup:
-    rows = []
-    if materials_url:
-        rows.append([_url_btn("📁 Открыть материалы", materials_url)])
-    if website_url:
+def make_materials_keyboard(
+    resources: list | None = None,
+    *,
+    website_url: str = "",
+) -> InlineKeyboardMarkup:
+    """Render the «Материалы» screen keyboard.
+
+    Each resource becomes a URL-button. Primary first, then globals, then per-student.
+    Falls back to optional `website_url` button when there are no resources.
+    """
+    from utils.resource_provider import provider_emoji
+
+    items = list(resources or [])
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if items:
+        primary = next((r for r in items if r.get("is_primary")), None)
+        rest = [r for r in items if r is not primary]
+        ordered = ([primary] if primary else []) + rest
+        for r in ordered:
+            emoji = provider_emoji(r.get("provider") or "other")
+            label = (r.get("label") or "Открыть").strip()
+            text = f"{emoji} {label}"
+            if primary and r is primary:
+                text = f"⭐ {text}"
+            rows.append([_url_btn(text[:64], r["url"])])
+    elif website_url:
         rows.append([_url_btn("↗️ Сайт преподавателя", website_url)])
+
     rows.append([_btn("◀️ Главное меню", "back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1188,3 +1213,73 @@ def make_admin_inbox_item_keyboard(event_id: int, kind: str) -> InlineKeyboardMa
     rows.append([_btn("✓ Закрыть", f"admin:inbox:item:{event_id}:close")])
     rows.append([_btn("◀️ К Inbox", "admin:inbox")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─── Admin: student & global learning resources ──────────────────────────────
+
+def _truncate_resource_label(label: str, max_len: int = 28) -> str:
+    label = (label or "").strip() or "(без названия)"
+    if len(label) <= max_len:
+        return label
+    return label[: max_len - 1] + "…"
+
+
+def make_admin_student_resources_keyboard(
+    telegram_id: int,
+    page: int,
+    resources: list,
+) -> InlineKeyboardMarkup:
+    """Per-student resources management screen.
+
+    `resources` lists only entries with `student_id == telegram_id` (no globals).
+    """
+    from utils.resource_provider import provider_emoji
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for r in resources:
+        emoji = provider_emoji(r.get("provider") or "other")
+        prefix = "⭐ " if r.get("is_primary") else ""
+        label = _truncate_resource_label(r.get("label") or "")
+        rows.append([
+            _url_btn(f"{prefix}{emoji} {label}", r["url"]),
+        ])
+        action_row = []
+        if not r.get("is_primary"):
+            action_row.append(_btn("⭐ Сделать основной", f"admin:resources:set_primary:{r['id']}:{telegram_id}:{page}"))
+        action_row.append(_btn("🗑 Удалить", f"admin:resources:delete:{r['id']}:{telegram_id}:{page}"))
+        rows.append(action_row)
+    rows.append([_btn("➕ Добавить ссылку", f"admin:resources:add:{telegram_id}:{page}")])
+    rows.append([_btn("🌍 Глобальные ссылки", "admin:resources:global")])
+    rows.append([_btn("◀️ К действиям", f"admin:student_actions:{telegram_id}:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_global_resources_keyboard(resources: list, *, back_callback: str = "admin:cat:service") -> InlineKeyboardMarkup:
+    from utils.resource_provider import provider_emoji
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for r in resources:
+        emoji = provider_emoji(r.get("provider") or "other")
+        prefix = "⭐ " if r.get("is_primary") else ""
+        label = _truncate_resource_label(r.get("label") or "")
+        rows.append([_url_btn(f"{prefix}{emoji} {label}", r["url"])])
+        action_row = []
+        if not r.get("is_primary"):
+            action_row.append(_btn("⭐ Сделать основной", f"admin:resources:set_primary:{r['id']}:global:0"))
+        action_row.append(_btn("🗑 Удалить", f"admin:resources:delete:{r['id']}:global:0"))
+        rows.append(action_row)
+    rows.append([_btn("➕ Добавить глобальную ссылку", "admin:resources:add:global:0")])
+    rows.append([_btn("◀️ Назад", back_callback)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_admin_resource_primary_choice_keyboard(
+    *,
+    yes_callback: str,
+    no_callback: str,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("⭐ Сделать основной", yes_callback)],
+        [_btn("➡️ Не сейчас", no_callback)],
+    ])
+

@@ -74,16 +74,27 @@ class UITextTest(unittest.TestCase):
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
 
-    def test_materials_text_handles_present_and_missing_url(self):
-        with_url = build_materials_text(materials_url="https://filen.io/example")
-        without_url = build_materials_text()
-        with_site = build_materials_text(website_url="https://teacher.example")
+    def test_materials_text_handles_present_and_missing_resources(self):
+        single = build_materials_text([
+            {"id": 1, "student_id": None, "label": "Курс A1", "url": "https://filen.io/x", "provider": "filen", "is_primary": True},
+        ])
+        empty = build_materials_text([])
+        with_site = build_materials_text([], website_url="https://teacher.example")
+        grouped = build_materials_text([
+            {"id": 1, "student_id": None, "label": "Глоб", "url": "https://filen.io/g", "provider": "filen", "is_primary": True},
+            {"id": 2, "student_id": None, "label": "Аудио", "url": "https://filen.io/a", "provider": "filen", "is_primary": False},
+            {"id": 3, "student_id": 1001, "label": "Курс лично", "url": "https://docs.google.com/p", "provider": "gdocs", "is_primary": False},
+        ])
 
-        self.assertIn("Учебные материалы", with_url)
-        self.assertNotIn("https://filen.io", with_url)  # link is on the button, not in text
-        self.assertIn("Учебные материалы", without_url)
-        self.assertIn("Напишите преподавателю", without_url)
+        self.assertIn("Учебные материалы", single)
+        self.assertIn("Курс A1", single)
+        self.assertNotIn("https://filen.io", single)  # links live on buttons
+        self.assertIn("Учебные материалы", empty)
+        self.assertIn("Напишите преподавателю", empty)
         self.assertIn("сайте преподавателя", with_site)
+        self.assertIn("Основное", grouped)
+        self.assertIn("Общие", grouped)
+        self.assertIn("Дополнительно для вас", grouped)
 
     def test_first_lesson_payment_invite_text_includes_thanks_and_requisites(self):
         text = build_first_lesson_payment_invite_text(
