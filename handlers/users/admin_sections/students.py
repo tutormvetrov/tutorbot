@@ -27,6 +27,7 @@ from keyboards.inline import (
     make_admin_student_danger_confirm_keyboard,
     make_admin_student_danger_review_keyboard,
     make_admin_student_settings_keyboard,
+    make_admin_student_stage_keyboard,
     make_admin_students_list_keyboard,
     make_deactivate_confirm_keyboard,
     make_deactivate_review_keyboard,
@@ -1152,6 +1153,64 @@ async def admin_student_speech_style_toggle(callback_query: types.CallbackQuery,
     await db.set_speech_style(student_id, target_style)
     await _render_admin_student_settings(callback_query.message, db, student_id, page)
     await callback_query.answer(f"Обращение переключено: {speech_style_label(target_style)}")
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_stage:"))
+async def admin_student_stage(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    student_id = int(parts[2])
+    page = int(parts[3])
+    student = await db.get_user(student_id)
+    if not student:
+        await callback_query.answer("Ученик не найден.", show_alert=True)
+        return
+    from utils.ui_text import STUDENT_STAGES, compute_student_stage, student_stage_badge
+
+    first_dt = student.get("cached_first_lesson_date") or student.get("first_lesson_date")
+    override = student.get("student_stage_override")
+    current = compute_student_stage(first_dt, override=override)
+    is_overridden = bool(override and override in STUDENT_STAGES)
+    badge = student_stage_badge(first_dt, override=override)
+    suffix = " (вручную)" if is_overridden else " (авто)"
+    auto_badge = student_stage_badge(first_dt)
+    text = (
+        f"📊 <b>Стадия ученика</b>\n\n"
+        f"👤 {q(student['full_name'])}\n"
+        f"Текущая: <b>{badge}{suffix}</b>\n"
+        f"Авто-определение: <b>{auto_badge}</b>\n\n"
+        f"Выберите стадию или оставьте авто-определение."
+    )
+    await callback_query.message.edit_text(
+        text,
+        reply_markup=make_admin_student_stage_keyboard(student_id, page, current, is_overridden),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_stage_set:"))
+async def admin_student_stage_set(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    student_id = int(parts[2])
+    page = int(parts[3])
+    target = parts[4]
+    from utils.ui_text import STUDENT_STAGES, student_stage_label
+
+    if target == "auto":
+        await db.set_student_stage_override(student_id, None)
+        await callback_query.answer("Стадия вернулась к авто-определению.")
+    elif target in STUDENT_STAGES:
+        await db.set_student_stage_override(student_id, target)
+        await callback_query.answer(f"Стадия: {student_stage_label(target)}")
+    else:
+        await callback_query.answer("Неизвестная стадия.", show_alert=True)
+        return
+    await _render_admin_student_card(callback_query.message, db, student_id, page)
 
 
 @router.callback_query(lambda c: c.data == "admin:lesson_formats")

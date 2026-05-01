@@ -931,6 +931,42 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_default_pricing_rate", exc)
             return
 
+    async def migrate_student_stage(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS cached_first_lesson_date TIMESTAMP;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS lessons_completed_count INTEGER DEFAULT 0;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS student_stage_override TEXT;",
+                execute=True,
+            )
+            await self.execute(
+                """
+                UPDATE users u
+                SET cached_first_lesson_date = sub.first_dt,
+                    lessons_completed_count = sub.cnt
+                FROM (
+                    SELECT student_id,
+                           MIN(lesson_date) AS first_dt,
+                           COUNT(*) FILTER (WHERE status = 'completed') AS cnt
+                    FROM lessons
+                    GROUP BY student_id
+                ) sub
+                WHERE sub.student_id = u.telegram_id
+                  AND (u.cached_first_lesson_date IS NULL
+                       OR u.lessons_completed_count IS NULL
+                       OR u.lessons_completed_count = 0)
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_stage", exc)
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -952,6 +988,9 @@ class DatabaseSchemaMixin:
                 "goal_text",
                 "goal_set_at",
                 "onboarding_completed_at",
+                "cached_first_lesson_date",
+                "lessons_completed_count",
+                "student_stage_override",
             },
             "lessons": {
                 "lesson_date",
@@ -1159,4 +1198,5 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_onboarding()
         await self.migrate_user_journey_events()
         await self.migrate_pair_shared_goal()
+        await self.migrate_student_stage()
         await self.verify_required_schema()

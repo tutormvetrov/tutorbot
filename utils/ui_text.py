@@ -165,17 +165,64 @@ def _add_calendar_month(value: date) -> date:
     return date(year, month, day)
 
 
-def student_freshness_label(first_lesson_date: datetime | None, today: date | None = None) -> str:
+STUDENT_STAGES = ("new", "regular", "veteran")
+
+STUDENT_STAGE_LABELS = {
+    "new": "Новый",
+    "regular": "Основной",
+    "veteran": "Давний",
+}
+
+STUDENT_STAGE_ICONS = {
+    "new": "🆕",
+    "regular": "📗",
+    "veteran": "🏅",
+}
+
+
+def compute_student_stage(
+    first_lesson_date: datetime | None,
+    override: str | None = None,
+    today: date | None = None,
+) -> str:
+    if override and override in STUDENT_STAGES:
+        return override
     if not first_lesson_date:
-        return "новый"
+        return "new"
     today = today or business_today()
-    rollover_date = _add_calendar_month(first_lesson_date.date())
-    return "старый" if today >= rollover_date else "новый"
+    first_date = first_lesson_date.date() if isinstance(first_lesson_date, datetime) else first_lesson_date
+    months_elapsed = (today.year - first_date.year) * 12 + (today.month - first_date.month)
+    if today.day < first_date.day:
+        months_elapsed -= 1
+    if months_elapsed >= 5:
+        return "veteran"
+    if months_elapsed >= 1:
+        return "regular"
+    return "new"
+
+
+def student_stage_label(stage: str) -> str:
+    return STUDENT_STAGE_LABELS.get(stage, STUDENT_STAGE_LABELS["new"])
+
+
+def student_stage_badge(
+    first_lesson_date: datetime | None,
+    override: str | None = None,
+    today: date | None = None,
+) -> str:
+    stage = compute_student_stage(first_lesson_date, override=override, today=today)
+    icon = STUDENT_STAGE_ICONS.get(stage, "🆕")
+    label = student_stage_label(stage)
+    return f"{icon} {label}"
+
+
+def student_freshness_label(first_lesson_date: datetime | None, today: date | None = None) -> str:
+    stage = compute_student_stage(first_lesson_date, today=today)
+    return "новый" if stage == "new" else "старый"
 
 
 def student_freshness_badge(first_lesson_date: datetime | None, today: date | None = None) -> str:
-    label = student_freshness_label(first_lesson_date, today=today)
-    return "🆕 новый" if label == "новый" else "📘 старый"
+    return student_stage_badge(first_lesson_date, today=today)
 
 
 def lesson_balance_label(balance: int | None) -> str:
@@ -1676,11 +1723,12 @@ def build_admin_students_page_text(
 
     for index, student in enumerate(page_items, start + 1):
         lesson_label = format_short_datetime(student.get("next_lesson_date")) if student.get("next_lesson_date") else "не назначен"
-        freshness = student_freshness_badge(student.get("first_lesson_date"))
+        s_first_dt = student.get("cached_first_lesson_date") or student.get("first_lesson_date")
+        s_badge = student_stage_badge(s_first_dt, override=student.get("student_stage_override"))
         lines.extend([
             "",
             f"<b>{index}. {html.quote(student['full_name'])}</b>",
-            f"{lesson_format_icon(student.get('lesson_format'))} {lesson_format_label(student.get('lesson_format'))} · {html.quote(student.get('language') or '—')} {html.quote(student.get('level') or '—')} · {freshness}",
+            f"{lesson_format_icon(student.get('lesson_format'))} {lesson_format_label(student.get('lesson_format'))} · {html.quote(student.get('language') or '—')} {html.quote(student.get('level') or '—')} · {s_badge}",
             f"🗣 Обращение: <b>{speech_style_label(student.get('speech_style'))}</b>",
             f"🎓 Баланс: <b>{lesson_balance_label(student.get('lesson_balance'))}</b> · 📅 {lesson_label}",
         ])
@@ -1761,11 +1809,16 @@ def build_admin_student_card_text(
     pair: dict | None = None,
 ) -> str:
     reminders = reminder_status_label(student.get("lesson_reminders"))
-    freshness = student_freshness_badge(student.get("first_lesson_date"))
+    first_dt = student.get("cached_first_lesson_date") or student.get("first_lesson_date")
+    override = student.get("student_stage_override")
+    badge = student_stage_badge(first_dt, override=override)
+    is_overridden = override and override in STUDENT_STAGES
+    badge_suffix = " (вручную)" if is_overridden else ""
+    completed = int(student.get("lessons_completed_count") or 0)
     lines = [
         f"👤 <b>{html.quote(student['full_name'])}</b>",
         "",
-        f"🏷 Статус: <b>{freshness}</b>",
+        f"🏷 Стадия: <b>{badge}{badge_suffix}</b> · уроков: {completed}",
         f"{lesson_format_icon(student.get('lesson_format'))} Формат: <b>{lesson_format_label(student.get('lesson_format'))}</b>",
         f"🗣 Обращение: <b>{speech_style_label(student.get('speech_style'))}</b>",
         f"🌍 Язык: <b>{html.quote(student.get('language') or '—')}</b>",

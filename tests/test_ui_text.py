@@ -37,7 +37,9 @@ from utils.ui_text import (
     child_problem_summary,
     child_traffic_light,
     compute_student_cta,
+    compute_student_stage,
     student_freshness_label,
+    student_stage_badge,
 )
 
 
@@ -215,13 +217,37 @@ class UITextTest(unittest.TestCase):
         first_lesson = datetime(2026, 3, 31, 15, 0)
 
         self.assertEqual(
-            student_freshness_label(first_lesson, today=date(2026, 4, 29)),
+            student_freshness_label(first_lesson, today=date(2026, 4, 30)),
             "новый",
         )
         self.assertEqual(
-            student_freshness_label(first_lesson, today=date(2026, 4, 30)),
+            student_freshness_label(first_lesson, today=date(2026, 5, 1)),
             "старый",
         )
+
+    def test_student_stage_no_lessons(self):
+        self.assertEqual(compute_student_stage(None), "new")
+
+    def test_student_stage_under_one_month(self):
+        first = datetime(2026, 4, 1, 10, 0)
+        self.assertEqual(compute_student_stage(first, today=date(2026, 4, 25)), "new")
+
+    def test_student_stage_regular(self):
+        first = datetime(2026, 1, 15, 10, 0)
+        self.assertEqual(compute_student_stage(first, today=date(2026, 3, 10)), "regular")
+
+    def test_student_stage_veteran(self):
+        first = datetime(2025, 10, 1, 10, 0)
+        self.assertEqual(compute_student_stage(first, today=date(2026, 4, 1)), "veteran")
+
+    def test_student_stage_override(self):
+        first = datetime(2026, 4, 1, 10, 0)
+        self.assertEqual(compute_student_stage(first, override="veteran"), "veteran")
+
+    def test_student_stage_badge_format(self):
+        badge = student_stage_badge(datetime(2026, 1, 1), today=date(2026, 4, 1))
+        self.assertIn("Основной", badge)
+        self.assertIn("📗", badge)
 
     def test_admin_students_page_text_includes_sorting_context(self):
         text = build_admin_students_page_text(

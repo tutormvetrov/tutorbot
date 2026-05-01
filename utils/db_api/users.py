@@ -162,6 +162,12 @@ class DatabaseUserMixin:
 
         return {"removed": True, "reactivated": reactivated}
 
+    async def set_student_stage_override(self, telegram_id: int, stage: str | None):
+        await self.execute(
+            "UPDATE users SET student_stage_override = $2 WHERE telegram_id = $1",
+            telegram_id, stage, execute=True,
+        )
+
     async def get_all_students(self):
         return await self.execute(
             """

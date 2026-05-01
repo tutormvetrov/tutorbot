@@ -257,6 +257,22 @@ class DatabaseLessonMixin:
             """,
             student_id, lesson_date, google_event_id, execute=True,
         )
+        if lesson_date is not None:
+            await self._touch_cached_first_lesson_date(student_id, lesson_date)
+
+    async def _touch_cached_first_lesson_date(self, student_id: int, lesson_date):
+        await self.execute(
+            """
+            UPDATE users
+            SET cached_first_lesson_date = CASE
+                WHEN cached_first_lesson_date IS NULL THEN $2
+                WHEN $2 < cached_first_lesson_date THEN $2
+                ELSE cached_first_lesson_date
+            END
+            WHERE telegram_id = $1
+            """,
+            student_id, lesson_date, execute=True,
+        )
 
     async def upsert_lesson_from_calendar(self, student_id: int, google_event_id: str, lesson_date):
         existing = await self.execute(
@@ -300,6 +316,8 @@ class DatabaseLessonMixin:
             """,
             student_id, google_event_id, lesson_date, execute=True,
         )
+        if lesson_date is not None:
+            await self._touch_cached_first_lesson_date(student_id, lesson_date)
         return "inserted"
 
     async def approve_freeze(self, lesson_id: int):
@@ -351,6 +369,10 @@ class DatabaseLessonMixin:
     async def complete_lesson(self, lesson_id: int, student_id: int):
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                lesson = await conn.fetchrow(
+                    "SELECT lesson_date FROM lessons WHERE id = $1",
+                    lesson_id,
+                )
                 await conn.execute(
                     """
                     UPDATE lessons
@@ -375,6 +397,21 @@ class DatabaseLessonMixin:
                         "UPDATE payments SET lessons_remaining = lessons_remaining - 1 WHERE id = $1",
                         payment['id'],
                     )
+                lesson_date = lesson["lesson_date"] if lesson else None
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET lessons_completed_count = COALESCE(lessons_completed_count, 0) + 1,
+                        cached_first_lesson_date = CASE
+                            WHEN cached_first_lesson_date IS NULL THEN $2
+                            WHEN $2 IS NOT NULL AND $2 < cached_first_lesson_date THEN $2
+                            ELSE cached_first_lesson_date
+                        END
+                    WHERE telegram_id = $1
+                    """,
+                    student_id,
+                    lesson_date,
+                )
 
     async def delete_lesson(self, lesson_id: int):
         await self.execute(

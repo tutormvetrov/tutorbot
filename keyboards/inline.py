@@ -573,8 +573,32 @@ def make_admin_student_settings_keyboard(
             f"🗣 Обращение: {speech_style_label(speech_style)} · {speech_style_toggle_label(speech_style)}",
             f"admin:student_speech_style:{telegram_id}:{page}:{'informal' if speech_style == 'formal' else 'formal'}",
         )],
+        [_btn("📊 Стадия ученика", f"admin:student_stage:{telegram_id}:{page}")],
         [_btn("◀️ К карточке ученика", f"admin:student_card:{telegram_id}:{page}")],
     ])
+
+
+def make_admin_student_stage_keyboard(
+    telegram_id: int,
+    page: int,
+    current_stage: str,
+    is_overridden: bool,
+) -> InlineKeyboardMarkup:
+    from utils.ui_text import STUDENT_STAGE_ICONS, STUDENT_STAGE_LABELS
+
+    rows = []
+    for stage_key in ("new", "regular", "veteran"):
+        icon = STUDENT_STAGE_ICONS[stage_key]
+        label = STUDENT_STAGE_LABELS[stage_key]
+        marker = " ✓" if stage_key == current_stage else ""
+        rows.append([_btn(
+            f"{icon} {label}{marker}",
+            f"admin:student_stage_set:{telegram_id}:{page}:{stage_key}",
+        )])
+    if is_overridden:
+        rows.append([_btn("🔄 Вернуть авто-определение", f"admin:student_stage_set:{telegram_id}:{page}:auto")])
+    rows.append([_btn("◀️ К настройкам", f"admin:student_settings:{telegram_id}:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_admin_student_danger_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
