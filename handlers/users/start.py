@@ -353,6 +353,13 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     if callable(sync_parent_links):
         await sync_parent_links(user_id, full_name)
 
+    create_initial_journey = getattr(db, "create_initial_journey", None)
+    if callable(create_initial_journey):
+        try:
+            await create_initial_journey(user_id)
+        except Exception:
+            logger.warning("Не удалось создать journey-события для %s", user_id, exc_info=True)
+
     await state.clear()
     level_label = LEVEL_LABELS.get(level, level)
     safe_full_name = html.quote(full_name)
@@ -452,6 +459,13 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
     sync_parent_links = getattr(db, "sync_parent_links_for_student", None)
     if callable(sync_parent_links):
         await sync_parent_links(user_id, full_name)
+
+    create_initial_journey = getattr(db, "create_initial_journey", None)
+    if callable(create_initial_journey):
+        try:
+            await create_initial_journey(user_id)
+        except Exception:
+            logger.warning("Не удалось создать journey-события для пары %s", user_id, exc_info=True)
 
     await state.clear()
     level_label = LEVEL_LABELS.get(level, level)

@@ -1,5 +1,5 @@
 from loader import dp
-from handlers.users import start, menu, callbacks, admin
+from handlers.users import start, menu, callbacks, admin, journey
 from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, inbox, notes, parents, payments, resources, students, study_plans, today
 
 # Порядок важен: admin регистрируется первым, чтобы его специфичные
@@ -19,6 +19,7 @@ dp.include_router(broadcast.router)
 dp.include_router(calendar_aliases.router)
 dp.include_router(notes.router)
 dp.include_router(health.router)
+dp.include_router(journey.router)
 dp.include_router(start.router)
 dp.include_router(menu.router)
 dp.include_router(callbacks.router)

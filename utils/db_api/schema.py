@@ -737,6 +737,61 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_admin_inbox", exc)
             return
 
+    async def migrate_users_add_onboarding(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS goal_text TEXT;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS goal_set_at TIMESTAMP;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMP;",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_onboarding", exc)
+            return
+
+    async def create_table_user_journey_events(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS user_journey_events (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                kind TEXT NOT NULL,
+                scheduled_at TIMESTAMP NOT NULL,
+                sent_at TIMESTAMP,
+                dismissed_at TIMESTAMP,
+                payload JSONB,
+                created_at TIMESTAMP DEFAULT now(),
+                UNIQUE(user_id, kind, scheduled_at)
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS user_journey_events_due_idx
+            ON user_journey_events (scheduled_at)
+            WHERE sent_at IS NULL AND dismissed_at IS NULL;
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS user_journey_events_user_idx
+            ON user_journey_events (user_id, kind);
+            """,
+            execute=True,
+        )
+
+    async def migrate_user_journey_events(self):
+        try:
+            await self.create_table_user_journey_events()
+        except Exception as exc:
+            self._log_migration_failure("migrate_user_journey_events", exc)
+            return
+
     async def create_table_student_resources(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS student_resources (
@@ -876,6 +931,9 @@ class DatabaseSchemaMixin:
                 "current_bookmark_lesson_id",
                 "first_lesson_invite_sent",
                 "first_lesson_invite_sent_at",
+                "goal_text",
+                "goal_set_at",
+                "onboarding_completed_at",
             },
             "lessons": {
                 "lesson_date",
@@ -1005,6 +1063,16 @@ class DatabaseSchemaMixin:
                 "created_at",
                 "created_by",
             },
+            "user_journey_events": {
+                "id",
+                "user_id",
+                "kind",
+                "scheduled_at",
+                "sent_at",
+                "dismissed_at",
+                "payload",
+                "created_at",
+            },
         }
 
         rows = await self.execute(
@@ -1067,4 +1135,6 @@ class DatabaseSchemaMixin:
         await self.migrate_default_pricing_rate()
         await self.migrate_admin_inbox()
         await self.migrate_student_resources()
+        await self.migrate_users_add_onboarding()
+        await self.migrate_user_journey_events()
         await self.verify_required_schema()

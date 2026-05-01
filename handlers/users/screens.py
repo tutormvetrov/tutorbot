@@ -68,12 +68,21 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
 
         cta = compute_student_cta(user, balance, next_lesson, homework, overdue_count)
 
+        journey_progress = None
+        get_progress = getattr(db, "get_journey_progress", None)
+        if callable(get_progress):
+            try:
+                journey_progress = await get_progress(effective_user_id)
+            except Exception:
+                journey_progress = None
+
         home_text = build_student_home_text(
             user,
             balance,
             active_homework_count=len(homework),
             next_lesson=next_lesson,
             pair=pair,
+            journey_progress=journey_progress,
         )
         if cta:
             home_text = home_text + "\n\n" + cta["text"]

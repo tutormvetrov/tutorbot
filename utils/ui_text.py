@@ -270,6 +270,7 @@ def build_student_home_text(
     active_homework_count: int,
     next_lesson: datetime | None = None,
     pair: dict | None = None,
+    journey_progress: dict | None = None,
 ) -> str:
     full_name = html.quote(user.get("full_name") or "—")
     next_lesson_text = format_datetime(next_lesson) if next_lesson else "не назначен"
@@ -292,6 +293,10 @@ def build_student_home_text(
         "",
     ])
 
+    if journey_progress and _should_show_journey_progress(journey_progress):
+        lines.append(build_journey_progress_text(journey_progress))
+        lines.append("")
+
     if next_lesson and active_homework_count:
         lines.append("Сначала стоит проверить расписание и домашние задания.")
     elif next_lesson:
@@ -299,6 +304,22 @@ def build_student_home_text(
     else:
         lines.append("Начните с расписания или напишите преподавателю, если нужен новый урок.")
     return "\n".join(lines)
+
+
+def _should_show_journey_progress(progress: dict) -> bool:
+    """Show progress only during the first 14 days and not after completion."""
+    if not progress:
+        return False
+    if progress.get("completed"):
+        return False
+    registered_at = progress.get("registered_at")
+    if registered_at is None:
+        return False
+    try:
+        age = datetime.now() - registered_at  # naive vs naive
+    except TypeError:
+        return False
+    return age <= timedelta(days=14)
 
 
 def build_schedule_text(lessons: list, lesson_format: str | None = None) -> str:
@@ -723,6 +744,132 @@ ADMIN_RESOURCE_PROMPT_PRIMARY_TEXT = (
     "⭐ Сделать эту ссылку основной?\n\n"
     "У ученика может быть только одна основная ссылка — она показывается крупнее всего."
 )
+
+
+# ─── Journey / Onboarding v2 ──────────────────────────────────────────────────
+
+GOAL_PROMPT_TEXT = (
+    "🎯 <b>Какая у вас цель в изучении языка?</b>\n\n"
+    "Поделитесь короткой формулировкой — например: «уверенно общаться в путешествии», "
+    "«читать книги в оригинале», «работать на английском».\n\n"
+    "Цель помогает мне понимать, на чём фокусироваться вместе с вами."
+)
+
+GOAL_PROMPT_FSM_TEXT = (
+    "✏️ Опишите вашу цель в одном-двух предложениях.\n\n"
+    "Если передумаете — нажмите «Отмена»."
+)
+
+GOAL_SAVED_TEXT = (
+    "✅ <b>Цель сохранена.</b>\n\n"
+    "Я буду опираться на неё, когда мы будем составлять план и подбирать материалы."
+)
+
+GOAL_INVALID_TEXT = (
+    "⚠️ Текст слишком короткий или слишком длинный (нужно от 5 до 500 символов)."
+)
+
+
+def build_goal_prompt_message(brand_tone: str | None = None) -> str:
+    return choose_tone_variant(
+        # strict
+        "🎯 <b>Цель занятий</b>\n\n"
+        "Сформулируйте цель: что хотите получить от курса. Это влияет на выбор материалов и темп.",
+        # neutral
+        GOAL_PROMPT_TEXT,
+        # warm
+        "🎯 <b>Расскажите про вашу цель</b>\n\n"
+        "Зачем вы учите язык? Это может быть путешествие, работа, фильмы в оригинале — "
+        "что угодно. Так я лучше пойму, что для вас важно, и подстрою план под это.",
+        # premium
+        "🎯 <b>Ваша цель курса</b>\n\n"
+        "Поделитесь личной целью — мы выстроим маршрут именно под неё.",
+        tone=brand_tone,
+    )
+
+
+def build_materials_intro_message(brand_tone: str | None = None) -> str:
+    return choose_tone_variant(
+        "📁 <b>Доступны учебные материалы</b>\n\n"
+        "Откройте раздел материалов и ознакомьтесь с подобранными ресурсами.",
+        "📁 <b>Учебные материалы готовы</b>\n\n"
+        "Откройте раздел материалов — внутри подобраны учебники и ссылки под ваш уровень.",
+        "📁 <b>Загляните в материалы</b>\n\n"
+        "Я собрал в одном месте всё, что пригодится в первые недели. Откройте — "
+        "там быстрее всего сориентироваться.",
+        "📁 <b>Ваша библиотека материалов</b>\n\n"
+        "Подборка ресурсов уже ждёт вас в разделе материалов.",
+        tone=brand_tone,
+    )
+
+
+def build_prep_first_lesson_message(brand_tone: str | None = None) -> str:
+    return choose_tone_variant(
+        "📅 <b>Первый урок состоится завтра</b>\n\n"
+        "Откройте учебный план и пройдите чек-лист подготовки.",
+        "📅 <b>Первый урок завтра</b>\n\n"
+        "Откройте учебный план — там короткий чек-лист подготовки.",
+        "📅 <b>Завтра наш первый урок</b>\n\n"
+        "Чтобы он прошёл легко и продуктивно — гляньте чек-лист подготовки в учебном плане. "
+        "Если что-то непонятно, напишите мне.",
+        "📅 <b>Завтра ваш первый урок</b>\n\n"
+        "Чек-лист подготовки уже готов в разделе учебного плана.",
+        tone=brand_tone,
+    )
+
+
+def build_feedback_after_first_message(brand_tone: str | None = None) -> str:
+    return choose_tone_variant(
+        "💬 <b>Оценка первого урока</b>\n\n"
+        "Сообщите, как прошёл урок: пожелания и комментарии помогут скорректировать план.",
+        "💬 <b>Поделитесь обратной связью</b>\n\n"
+        "Расскажите, как прошёл первый урок: что было полезным, что улучшить.",
+        "💬 <b>Как прошёл первый урок?</b>\n\n"
+        "Поделитесь впечатлениями — что понравилось, что хотелось бы изменить. "
+        "Это помогает мне настроить занятия под вас.",
+        "💬 <b>Ваши впечатления о первом уроке</b>\n\n"
+        "Поделитесь, что было ценным, и я учту это в следующих занятиях.",
+        tone=brand_tone,
+    )
+
+
+def build_weekly_checkin_message(brand_tone: str | None = None, *, has_goal: bool = False) -> str:
+    if has_goal:
+        return choose_tone_variant(
+            "🌱 <b>Еженедельная проверка</b>\n\n"
+            "Сообщите, движемся ли мы в сторону вашей цели. Корректировки обсудим.",
+            "🌱 <b>Еженедельный check-in</b>\n\n"
+            "Прошла неделя занятий. Цель в фокусе? Открыты ли вопросы — напишите.",
+            "🌱 <b>Прошла неделя</b>\n\n"
+            "Как дела с целью? Если хочется что-то поменять — напишите. "
+            "Если двигаемся в нужную сторону — продолжаем.",
+            "🌱 <b>Еженедельный обзор</b>\n\n"
+            "Цель остаётся в фокусе? Сообщите, если хотите что-то скорректировать.",
+            tone=brand_tone,
+        )
+    return choose_tone_variant(
+        "🌱 <b>Итоги первой недели</b>\n\n"
+        "Сообщите впечатления и пожелания по формату занятий.",
+        "🌱 <b>Прошла неделя</b>\n\n"
+        "Поделитесь впечатлениями от первой недели. Что хотелось бы поменять?",
+        "🌱 <b>Уже неделя вместе</b>\n\n"
+        "Как ощущения от первой недели? Если будет, что обсудить или скорректировать — пишите.",
+        "🌱 <b>Первая неделя завершена</b>\n\n"
+        "Поделитесь впечатлениями — это поможет настроить дальнейшие занятия.",
+        tone=brand_tone,
+    )
+
+
+def build_journey_progress_text(progress: dict) -> str:
+    """Compact one-line progress for the home-screen header."""
+    items = [
+        ("Тест уровня", progress.get("level_test")),
+        ("Цель", progress.get("goal")),
+        ("Материалы", progress.get("materials")),
+        ("Первый урок", progress.get("first_lesson")),
+    ]
+    parts = [f"{'✅' if done else '⬜'} {label}" for label, done in items]
+    return "Прогресс: " + " · ".join(parts)
 
 
 def build_first_lesson_payment_invite_text(
@@ -1558,6 +1705,9 @@ def build_admin_student_card_text(
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
     ]
+    goal_text = (student.get("goal_text") or "").strip()
+    if goal_text:
+        lines.extend(["", f"🎯 Цель: {html.quote(goal_text)}"])
     pair_label = pair_title_label(pair)
     if pair_label:
         lines.extend([

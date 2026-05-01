@@ -109,3 +109,7 @@ class AdminAddResource(StatesGroup):
     waiting_for_url = State()
     waiting_for_label = State()
     waiting_for_primary_choice = State()
+
+
+class OnboardingGoal(StatesGroup):
+    waiting_for_text = State()

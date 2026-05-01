@@ -27,10 +27,15 @@ from utils.reschedule import encode_reschedule_slot, find_next_free_reschedule_s
 from utils.speech import choose_form
 from utils.time import business_naive_now, business_today
 from utils.ui_text import (
+    build_feedback_after_first_message,
     build_first_lesson_payment_invite_text,
+    build_goal_prompt_message,
+    build_materials_intro_message,
     build_parent_weekly_digest_text,
+    build_prep_first_lesson_message,
     build_teacher_bookmark_reminder_text,
     build_teacher_lesson_followup_text,
+    build_weekly_checkin_message,
     build_weekly_study_plan_text,
 )
 
@@ -447,6 +452,130 @@ async def first_lesson_payment_invite_job(bot, db: "Database"):
     )
 
 
+async def user_journey_dispatch_job(bot, db: "Database"):
+    """Sends due onboarding nudges (goal prompt, materials intro, prep, feedback,
+    weekly check-in) and re-schedules recurring weekly_checkin events."""
+    from utils.brand import get_brand_tone
+    from utils.db_api.journey import (
+        JOURNEY_KIND_FEEDBACK_AFTER_FIRST,
+        JOURNEY_KIND_GOAL_PROMPT,
+        JOURNEY_KIND_MATERIALS_INTRO,
+        JOURNEY_KIND_PREP_FIRST_LESSON,
+        JOURNEY_KIND_WEEKLY_CHECKIN,
+    )
+    from keyboards.inline import _btn
+
+    try:
+        events = list(await db.get_due_journey_events(limit=50) or [])
+    except Exception as exc:
+        logger.warning("user_journey_dispatch_job: cannot read events: %s", exc)
+        update_job_status("user_journey_dispatch", "error", error=str(exc))
+        return
+
+    if not events:
+        update_job_status("user_journey_dispatch", "ok", sent=0, checked=0)
+        return
+
+    brand_tone = get_brand_tone()
+    sent = 0
+    for event in events:
+        user_id = int(event["user_id"])
+        kind = event["kind"]
+        try:
+            user = await db.get_user(user_id)
+            if not user or not user.get("is_active", True):
+                await db.dismiss_journey_event(int(event["id"]))
+                continue
+
+            text: str | None = None
+            keyboard = None
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+            if kind == JOURNEY_KIND_GOAL_PROMPT:
+                if user.get("goal_text"):
+                    await db.dismiss_journey_event(int(event["id"]))
+                    continue
+                text = build_goal_prompt_message(brand_tone)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [_btn("🎯 Указать цель", "goal:set")],
+                    [_btn("🙅 Не сейчас", "goal:dismiss")],
+                ])
+            elif kind == JOURNEY_KIND_MATERIALS_INTRO:
+                text = build_materials_intro_message(brand_tone)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [_btn("📁 Открыть материалы", "materials")],
+                ])
+            elif kind == JOURNEY_KIND_PREP_FIRST_LESSON:
+                if user.get("role") != "student":
+                    await db.dismiss_journey_event(int(event["id"]))
+                    continue
+                text = build_prep_first_lesson_message(brand_tone)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [_btn("📌 Учебный план", "study_plan")],
+                ])
+            elif kind == JOURNEY_KIND_FEEDBACK_AFTER_FIRST:
+                if not user.get("first_lesson_invite_sent"):
+                    # First lesson hasn't happened yet — dismiss and let the
+                    # post-lesson hook re-create when appropriate.
+                    await db.dismiss_journey_event(int(event["id"]))
+                    continue
+                text = build_feedback_after_first_message(brand_tone)
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [_btn("✉️ Написать отзыв", "reply:lesson")],
+                ])
+            elif kind == JOURNEY_KIND_WEEKLY_CHECKIN:
+                text = build_weekly_checkin_message(
+                    brand_tone,
+                    has_goal=bool(user.get("goal_text")),
+                )
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [_btn("✉️ Написать преподавателю", "reply:general")],
+                ])
+            else:
+                await db.dismiss_journey_event(int(event["id"]))
+                continue
+
+            await asyncio.wait_for(
+                bot.send_message(user_id, text, reply_markup=keyboard),
+                timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
+            )
+            await db.mark_journey_event_sent(int(event["id"]))
+            sent += 1
+
+            if kind == JOURNEY_KIND_WEEKLY_CHECKIN:
+                await db.schedule_next_weekly_checkin(user_id, after=event["scheduled_at"])
+            elif kind == JOURNEY_KIND_FEEDBACK_AFTER_FIRST:
+                # Try to mark onboarding as completed if all 4 steps are done.
+                progress = await db.get_journey_progress(user_id)
+                if (
+                    progress.get("level_test")
+                    and progress.get("goal")
+                    and progress.get("materials")
+                    and progress.get("first_lesson")
+                    and not progress.get("completed")
+                ):
+                    if await db.mark_onboarding_completed(user_id):
+                        try:
+                            await db.add_inbox_event("onboarding_completed", {
+                                "telegram_id": user_id,
+                                "full_name": user.get("full_name") or str(user_id),
+                                "context": "onboarding",
+                                "message_preview": "Прошёл все шаги онбординга.",
+                            })
+                        except Exception:
+                            pass
+        except Exception as exc:
+            logger.warning(
+                "user_journey_dispatch_job: failed to send %s to %s: %s",
+                kind,
+                user_id,
+                exc,
+            )
+
+    update_job_status("user_journey_dispatch", "ok", sent=sent, checked=len(events))
+    write_runtime_event("user_journey_dispatch", "ok", sent=sent, checked=len(events))
+
+
 async def calendar_sync_job(bot, db: "Database"):
     """Каждые 30 минут — автосинхронизация Google Calendar."""
     try:
@@ -728,5 +857,12 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="calendar_auto_sync",
         name="Авто-синхронизация Google Calendar",
+    )
+    scheduler.add_job(
+        user_journey_dispatch_job,
+        CronTrigger(minute="*/30"),
+        args=[bot, db],
+        id="user_journey_dispatch",
+        name="Онбординг: рассылка журнальных событий",
     )
     return scheduler
