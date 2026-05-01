@@ -87,6 +87,7 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
         if cta:
             home_text = home_text + "\n\n" + cta["text"]
 
+        rows: list[list[InlineKeyboardButton]] = []
         if cta:
             cta_url = cta.get("button_url")
             if cta_url:
@@ -96,8 +97,12 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
                     text=cta["button_label"],
                     callback_data=cta.get("button_callback", "back_to_menu"),
                 )
+            rows.append([cta_btn])
+        if pair:
+            rows.append([InlineKeyboardButton(text="🎯 Наша цель", callback_data="pair_goal:open")])
+        if rows:
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[[cta_btn]] + list(student_main_keyboard.inline_keyboard)
+                inline_keyboard=rows + list(student_main_keyboard.inline_keyboard)
             )
         else:
             keyboard = student_main_keyboard

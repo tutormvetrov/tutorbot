@@ -139,6 +139,31 @@ async def _handle_pair_invite_start(message: Message, db: Database, token: str) 
         f"✅ <b>Вы подключены к учебной паре.</b>\n\n{home_text}",
         reply_markup=home_keyboard,
     )
+
+    # Pair-onboarding wow: if primary already has a personal goal and the pair
+    # has none yet, offer to adopt it as the shared pair goal.
+    try:
+        primary_id = int(invite["primary_student_id"])
+        pair_id = int(pair.get("id") or invite["group_id"])
+        primary_user = await db.get_user(primary_id)
+        primary_goal = (primary_user.get("goal_text") or "").strip() if primary_user else ""
+        existing_pair_goal = (pair.get("shared_goal_text") or "").strip() if isinstance(pair, dict) else ""
+        if primary_goal and not existing_pair_goal:
+            from keyboards.inline import _btn
+            from utils.ui_text import build_pair_invite_goal_inherit_text
+            from aiogram.types import InlineKeyboardMarkup
+            partner_label = primary_user.get("full_name") or "ваш партнёр"
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [_btn("✅ Поддержать", f"pair_goal:inherit:{pair_id}")],
+                [_btn("✏️ Поставить свою", "pair_goal:set")],
+                [_btn("🙅 Не сейчас", "back_to_menu")],
+            ])
+            await message.answer(
+                build_pair_invite_goal_inherit_text(partner_label, primary_goal),
+                reply_markup=kb,
+            )
+    except Exception:
+        logger.warning("Не удалось предложить унаследовать цель пары для %s", user_id, exc_info=True)
     return True
 
 

@@ -221,3 +221,115 @@ class DatabaseJourneyMixin:
             return int((result or "UPDATE 0").split()[-1]) > 0
         except Exception:
             return False
+
+    # ─── Pair shared goal ────────────────────────────────────────────────────
+
+    async def set_pair_goal(self, pair_id: int, goal_text: str) -> bool:
+        result = await self.execute(
+            """
+            UPDATE student_groups
+            SET shared_goal_text = $2,
+                shared_goal_set_at = COALESCE(shared_goal_set_at, now())
+            WHERE id = $1 AND is_active = true
+            """,
+            pair_id,
+            goal_text,
+            execute=True,
+        )
+        try:
+            return int((result or "UPDATE 0").split()[-1]) > 0
+        except Exception:
+            return False
+
+    async def get_pair_goal(self, pair_id: int) -> dict | None:
+        row = await self.execute(
+            """
+            SELECT id, shared_goal_text, shared_goal_set_at, shared_goal_due_date
+            FROM student_groups
+            WHERE id = $1
+            """,
+            pair_id,
+            fetchrow=True,
+        )
+        return dict(row) if row else None
+
+    async def get_pair_progress(self, pair_id: int, *, since: datetime | None = None) -> dict:
+        """Aggregate basic pair stats since `since` (defaults to last 7 days).
+
+        Returns dict with: lessons_completed, homework_done, payments_total,
+        balance, next_lesson_at, member_telegram_ids.
+        """
+        if since is None:
+            since = datetime.now() - timedelta(days=7)
+
+        pair_row = await self.execute(
+            """
+            SELECT id, primary_student_id, shared_goal_text, shared_goal_set_at, shared_goal_due_date
+            FROM student_groups WHERE id = $1
+            """,
+            pair_id,
+            fetchrow=True,
+        )
+        if not pair_row:
+            return {}
+        primary_id = int(pair_row["primary_student_id"])
+
+        lessons_completed = await self.execute(
+            """
+            SELECT COUNT(*)::int FROM lessons
+            WHERE student_id = $1 AND status = 'completed' AND lesson_date >= $2
+            """,
+            primary_id,
+            since,
+            fetchval=True,
+        )
+        next_row = await self.execute(
+            """
+            SELECT lesson_date FROM lessons
+            WHERE student_id = $1 AND status = 'active' AND lesson_date > now()
+            ORDER BY lesson_date LIMIT 1
+            """,
+            primary_id,
+            fetchrow=True,
+        )
+        homework_done = await self.execute(
+            """
+            SELECT COUNT(*)::int FROM homework
+            WHERE student_id = $1 AND status = 'done' AND created_at >= $2
+            """,
+            primary_id,
+            since,
+            fetchval=True,
+        )
+        member_rows = await self.execute(
+            """
+            SELECT student_id FROM student_group_members
+            WHERE group_id = $1 AND student_id IS NOT NULL
+            """,
+            pair_id,
+            fetch=True,
+        )
+        member_ids = {primary_id, *(int(r["student_id"]) for r in (member_rows or []))}
+
+        return {
+            "pair_id": pair_id,
+            "primary_id": primary_id,
+            "shared_goal_text": pair_row["shared_goal_text"],
+            "shared_goal_set_at": pair_row["shared_goal_set_at"],
+            "lessons_completed": int(lessons_completed or 0),
+            "homework_done": int(homework_done or 0),
+            "next_lesson_at": next_row["lesson_date"] if next_row else None,
+            "member_telegram_ids": sorted(member_ids),
+            "since": since,
+        }
+
+    async def list_active_pairs(self) -> list[dict]:
+        rows = await self.execute(
+            """
+            SELECT id, primary_student_id, title, shared_goal_text
+            FROM student_groups
+            WHERE is_active = true
+            """,
+            fetch=True,
+        )
+        return [dict(r) for r in (rows or [])]

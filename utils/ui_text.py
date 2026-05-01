@@ -286,6 +286,11 @@ def build_student_home_text(
             f"👥 Пара: <b>{html.quote(pair_label)}</b>",
             "Общий темп, общий баланс и одно домашнее задание на двоих.",
         ])
+        shared_goal = (pair or {}).get("shared_goal_text") if isinstance(pair, dict) else None
+        if shared_goal:
+            lines.append(f"🎯 Наша цель: <b>{html.quote(str(shared_goal))}</b>")
+        else:
+            lines.append("🎯 Общая цель ещё не задана — нажмите «🎯 Наша цель», чтобы поставить.")
     lines.extend([
         f"📅 Ближайший урок: <b>{html.quote(next_lesson_text)}</b>",
         f"📚 Активные ДЗ: <b>{int(active_homework_count or 0)}</b>",
@@ -857,6 +862,72 @@ def build_weekly_checkin_message(brand_tone: str | None = None, *, has_goal: boo
         "🌱 <b>Первая неделя завершена</b>\n\n"
         "Поделитесь впечатлениями — это поможет настроить дальнейшие занятия.",
         tone=brand_tone,
+    )
+
+
+def build_pair_weekly_report_text(stats: dict, brand_tone: str | None = None) -> str:
+    lessons = int(stats.get("lessons_completed") or 0)
+    homework = int(stats.get("homework_done") or 0)
+    next_lesson = stats.get("next_lesson_at")
+    next_str = format_datetime(next_lesson) if next_lesson else "пока не назначен"
+    goal = (stats.get("shared_goal_text") or "").strip()
+
+    header = choose_tone_variant(
+        "🌱 <b>Итоги недели вашей пары</b>",
+        "🌱 <b>Прошла неделя в паре</b>",
+        "🌱 <b>Уже неделя вместе как пара</b>",
+        "🌱 <b>Еженедельный обзор пары</b>",
+        tone=brand_tone,
+    )
+    body = [
+        header,
+        "",
+        f"📚 Уроков завершено: <b>{lessons}</b>",
+        f"✅ ДЗ закрыто: <b>{homework}</b>",
+        f"📅 Следующий урок: <b>{html.quote(next_str)}</b>",
+    ]
+    if goal:
+        body.extend(["", f"🎯 Цель в фокусе: <b>{html.quote(goal)}</b>"])
+    closing = choose_tone_variant(
+        "Сообщите, если что-то нужно скорректировать.",
+        "Если будет, что обсудить, — напишите преподавателю.",
+        "Если хочется что-то поменять — пишите, обсудим.",
+        "Открыты к обсуждению дальнейших шагов.",
+        tone=brand_tone,
+    )
+    body.extend(["", closing])
+    return "\n".join(body)
+
+
+PAIR_GOAL_PROMPT_TEXT = (
+    "🎯 <b>Общая цель пары</b>\n\n"
+    "Опишите общую цель — то, чего вы хотите достичь вместе. Например: "
+    "«пройти A2 до конца лета», «уверенно говорить на интервью», "
+    "«готовиться вместе к экзамену».\n\n"
+    "Эту цель будут видеть оба участника пары."
+)
+
+PAIR_GOAL_PROMPT_FSM_TEXT = (
+    "✏️ Напишите общую цель пары одним-двумя предложениями.\n\n"
+    "Если передумаете — нажмите «Отмена»."
+)
+
+PAIR_GOAL_SAVED_TEXT = (
+    "✅ <b>Общая цель сохранена.</b>\n\n"
+    "Теперь оба партнёра видят её на главном экране и в еженедельном обзоре."
+)
+
+PAIR_GOAL_INVALID_TEXT = (
+    "⚠️ Текст слишком короткий или слишком длинный (нужно от 5 до 500 символов)."
+)
+
+
+def build_pair_invite_goal_inherit_text(partner_name: str, goal_text: str) -> str:
+    return (
+        "🎯 <b>Поддержать цель партнёра?</b>\n\n"
+        f"Ваш партнёр <b>{html.quote(partner_name)}</b> уже сформулировал цель:\n"
+        f"«{html.quote(goal_text)}»\n\n"
+        "Если согласны, я зафиксирую её как общую цель пары — её увидите оба."
     )
 
 

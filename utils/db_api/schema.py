@@ -792,6 +792,24 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_user_journey_events", exc)
             return
 
+    async def migrate_pair_shared_goal(self):
+        try:
+            await self.execute(
+                "ALTER TABLE student_groups ADD COLUMN IF NOT EXISTS shared_goal_text TEXT;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE student_groups ADD COLUMN IF NOT EXISTS shared_goal_set_at TIMESTAMP;",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE student_groups ADD COLUMN IF NOT EXISTS shared_goal_due_date DATE;",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_pair_shared_goal", exc)
+            return
+
     async def create_table_student_resources(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS student_resources (
@@ -974,6 +992,9 @@ class DatabaseSchemaMixin:
                 "onboarding_source",
                 "is_active",
                 "created_at",
+                "shared_goal_text",
+                "shared_goal_set_at",
+                "shared_goal_due_date",
             },
             "student_group_members": {
                 "group_id",
@@ -1137,4 +1158,5 @@ class DatabaseSchemaMixin:
         await self.migrate_student_resources()
         await self.migrate_users_add_onboarding()
         await self.migrate_user_journey_events()
+        await self.migrate_pair_shared_goal()
         await self.verify_required_schema()

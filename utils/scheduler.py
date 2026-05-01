@@ -31,6 +31,7 @@ from utils.ui_text import (
     build_first_lesson_payment_invite_text,
     build_goal_prompt_message,
     build_materials_intro_message,
+    build_pair_weekly_report_text,
     build_parent_weekly_digest_text,
     build_prep_first_lesson_message,
     build_teacher_bookmark_reminder_text,
@@ -576,6 +577,43 @@ async def user_journey_dispatch_job(bot, db: "Database"):
     write_runtime_event("user_journey_dispatch", "ok", sent=sent, checked=len(events))
 
 
+async def pair_weekly_report_job(bot, db: "Database"):
+    """Monday morning weekly report for active pairs."""
+    from utils.brand import get_brand_tone
+    list_pairs = getattr(db, "list_active_pairs", None)
+    if not callable(list_pairs):
+        return
+    pairs = list(await list_pairs() or [])
+    if not pairs:
+        update_job_status("pair_weekly_report", "ok", sent=0, checked=0)
+        return
+    brand_tone = get_brand_tone()
+    sent = 0
+    for pair in pairs:
+        try:
+            stats = await db.get_pair_progress(int(pair["id"]))
+            if not stats:
+                continue
+            text = build_pair_weekly_report_text(stats, brand_tone)
+            for telegram_id in stats.get("member_telegram_ids") or []:
+                try:
+                    await asyncio.wait_for(
+                        bot.send_message(int(telegram_id), text),
+                        timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
+                    )
+                    sent += 1
+                except Exception as exc:
+                    logger.warning(
+                        "pair_weekly_report_job: failed to send to %s: %s",
+                        telegram_id,
+                        exc,
+                    )
+        except Exception as exc:
+            logger.warning("pair_weekly_report_job: failed pair %s: %s", pair.get("id"), exc)
+    update_job_status("pair_weekly_report", "ok", sent=sent, checked=len(pairs))
+    write_runtime_event("pair_weekly_report", "ok", sent=sent, checked=len(pairs))
+
+
 async def calendar_sync_job(bot, db: "Database"):
     """Каждые 30 минут — автосинхронизация Google Calendar."""
     try:
@@ -864,5 +902,12 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="user_journey_dispatch",
         name="Онбординг: рассылка журнальных событий",
+    )
+    scheduler.add_job(
+        pair_weekly_report_job,
+        CronTrigger(day_of_week="mon", hour=10, minute=0),
+        args=[bot, db],
+        id="pair_weekly_report",
+        name="Еженедельный обзор для пар",
     )
     return scheduler
