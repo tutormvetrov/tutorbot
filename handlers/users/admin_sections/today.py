@@ -6,7 +6,6 @@ Handles:
   admin:today:lessons   — today's lesson list
   admin:today:unpaid    — students with zero balance (send requisites)
   admin:today:missing_hw — students missing homework before tomorrow's lesson
-  admin:inbox           — placeholder until Stage 3
   admin:cat:education:lessons  — sub-screen for lesson actions
   admin:cat:education:payments — sub-screen for payment actions
   admin:cat:education:homework — sub-screen for homework actions
@@ -20,7 +19,6 @@ from aiogram.filters import StateFilter
 from data import config
 from data.config import load_teacher_info
 from keyboards.inline import (
-    back_to_admin_keyboard,
     make_admin_today_keyboard,
     make_back_button_keyboard,
 )
@@ -165,21 +163,6 @@ async def admin_today_missing_hw(callback_query: types.CallbackQuery, db: Databa
     await callback_query.message.edit_text(
         "\n".join(lines),
         reply_markup=back_kb,
-    )
-    await callback_query.answer()
-
-
-# ─── «💬 Inbox» placeholder (Stage 3 fills this in) ─────────────────────────
-
-@router.callback_query(lambda c: c.data == "admin:inbox", StateFilter("*"))
-async def admin_inbox_placeholder(callback_query: types.CallbackQuery):
-    if not _is_admin(callback_query.from_user.id):
-        await callback_query.answer()
-        return
-
-    await callback_query.message.edit_text(
-        "💬 <b>Inbox</b>\n\nРаздел в разработке. Полный Inbox появится в следующем обновлении (Этап 3).",
-        reply_markup=back_to_admin_keyboard,
     )
     await callback_query.answer()
 
