@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import subprocess
 from datetime import datetime
 
 from aiogram import Router, html, types
@@ -10,6 +13,8 @@ from utils.db_api.postgresql import Database
 from utils.google_calendar import load_last_sync_report
 from utils.observability import load_ops_status, load_recent_runtime_events
 from utils.ui_text import ADMIN_HEALTH_NO_ERRORS_TEXT
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
@@ -178,3 +183,49 @@ async def admin_health(callback_query: types.CallbackQuery, db: Database):
 
     await _render_monitoring_screen(callback_query, db)
     await callback_query.answer()
+
+
+# ─── Bot restart ─────────────────────────────────────────────────────────────
+
+_restart_confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        _btn("✅ Да, перезапустить", "admin:restart:confirm"),
+        _btn("❌ Отмена", "admin:cat:service"),
+    ],
+])
+
+
+@router.callback_query(lambda c: c.data == "admin:restart", StateFilter("*"))
+async def admin_restart_prompt(callback_query: types.CallbackQuery):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await callback_query.message.edit_text(
+        "🔄 <b>Перезапуск бота</b>\n\n"
+        "Бот будет недоступен несколько секунд.\n"
+        "Вы уверены?",
+        reply_markup=_restart_confirm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:restart:confirm", StateFilter("*"))
+async def admin_restart_confirm(callback_query: types.CallbackQuery):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await callback_query.message.edit_text("🔄 Перезапускаюсь…")
+    await callback_query.answer()
+
+    async def _do_restart():
+        await asyncio.sleep(1)
+        try:
+            subprocess.Popen(
+                ["sudo", "systemctl", "restart", "tutorbot"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            logger.exception("Не удалось перезапустить бота")
+
+    asyncio.create_task(_do_restart())

@@ -1562,17 +1562,8 @@ async def admin_add_student_id(message: types.Message, state: FSMContext, db: Da
     if await db.is_telegram_id_blocked(telegram_id):
         await state.clear()
         await message.answer(
-            f"ID <code>{telegram_id}</code> is blocked.\n"
-            "Run <code>/unblock</code> first, then add the profile.",
-            reply_markup=back_to_admin_keyboard,
-        )
-        return
-
-    if await db.is_telegram_id_blocked(telegram_id):
-        await state.clear()
-        await message.answer(
-            f"рџљ« ID <code>{telegram_id}</code> РµСЃС‚СЊ РІ СЃРїРёСЃРєРµ Р±Р»РѕРєРёСЂРѕРІРѕРє.\n"
-            "РЎРЅР°С‡Р°Р»Р° СЃРЅРёРјРёС‚Рµ Р±Р»РѕРє РєРѕРјР°РЅРґРѕР№ <code>/unblock</code>, Р° РїРѕС‚РѕРј РґРѕР±Р°РІР»СЏР№С‚Рµ РїСЂРѕС„РёР»СЊ.",
+            f"🚫 ID <code>{telegram_id}</code> есть в списке блокировок.\n"
+            "Сначала снимите блок командой <code>/unblock</code>, а потом добавляйте профиль.",
             reply_markup=back_to_admin_keyboard,
         )
         return

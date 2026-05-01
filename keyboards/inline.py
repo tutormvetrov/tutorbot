@@ -301,6 +301,7 @@ admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📝 Рабочие заметки", "admin:notes")],
     [_btn("🌍 Глобальные учебные ссылки", "admin:resources:global")],
     [_btn("🧪 Просмотр ролей", "admin:preview")],
+    [_btn("🔄 Перезапуск бота", "admin:restart")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
 

@@ -140,7 +140,7 @@ def _fix_utf8_mojibake(value: str) -> str:
 
 def _format_block_entry_label(item: dict | None) -> str:
     if not item:
-        return "not found in DB"
+        return "нет в базе"
     full_name = item.get("full_name")
     role = item.get("role")
     if full_name and role:
@@ -149,7 +149,7 @@ def _format_block_entry_label(item: dict | None) -> str:
         return _q(full_name)
     if role:
         return _q(role)
-    return "not found in DB"
+    return "нет в базе"
 
 
 async def render_admin_home(message: types.Message, db: Database):
@@ -325,11 +325,11 @@ async def command_block(message: types.Message, db: Database):
 
     telegram_id, reason = _parse_admin_id_command(message.text)
     if telegram_id is None:
-        await message.answer("<b>Command format</b>\n\n<code>/block 123456789 reason</code>")
+        await message.answer("🚫 <b>Формат команды</b>\n\n<code>/block 123456789 причина</code>")
         return
 
     if telegram_id == message.from_user.id:
-        await message.answer("You cannot block your own Telegram ID.")
+        await message.answer("⚠️ Свой Telegram ID блокировать нельзя.")
         return
 
     existing_user = await db.get_user(telegram_id)
@@ -341,61 +341,22 @@ async def command_block(message: types.Message, db: Database):
     )
 
     lines = [
-        "<b>Telegram ID blocked</b>",
+        "🚫 <b>ID заблокирован</b>",
         "",
         f"Telegram ID: <code>{telegram_id}</code>",
-        f"Profile: <b>{_format_block_entry_label(existing_user)}</b>",
+        f"Профиль: <b>{_format_block_entry_label(existing_user)}</b>",
     ]
     if reason:
-        lines.append(f"Reason: <b>{_q(reason)}</b>")
+        lines.append(f"Причина: <b>{_q(reason)}</b>")
     if was_blocked:
-        lines.append("Existing block entry was updated.")
+        lines.append("Запись обновлена.")
     elif existing_user:
         if existing_user.get("is_active") is False:
-            lines.append("The profile was already inactive. Hard ID block was added on top.")
+            lines.append("Профиль уже был неактивен. Блок по ID добавлен поверх этого состояния.")
         else:
-            lines.append("The profile was also deactivated so incoming access and scheduled sends stop.")
+            lines.append("Профиль дополнительно деактивирован, чтобы остановить доступ и рабочие напоминания.")
     else:
-        lines.append("If this ID comes to the bot for the first time, registration will not start.")
-    await message.answer("\n".join(lines))
-    return
-
-    telegram_id, reason = _parse_admin_id_command(message.text)
-    if telegram_id is None:
-        await message.answer(
-            "рџљ« <b>Р¤РѕСЂРјР°С‚ РєРѕРјР°РЅРґС‹</b>\n\n<code>/block 123456789 РїСЂРёС‡РёРЅР°</code>"
-        )
-        return
-
-    if telegram_id == message.from_user.id:
-        await message.answer("вљ пёЏ РЎРІРѕР№ Telegram ID Р±Р»РѕРєРёСЂРѕРІР°С‚СЊ РЅРµР»СЊР·СЏ.")
-        return
-
-    existing_user = await db.get_user(telegram_id)
-    was_blocked = await db.is_telegram_id_blocked(telegram_id)
-    await db.block_telegram_id(
-        telegram_id,
-        blocked_by=message.from_user.id,
-        reason=reason or None,
-    )
-
-    lines = [
-        "рџљ« <b>ID Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ</b>",
-        "",
-        f"Telegram ID: <code>{telegram_id}</code>",
-        f"РџСЂРѕС„РёР»СЊ: <b>{_format_block_entry_label(existing_user)}</b>",
-    ]
-    if reason:
-        lines.append(f"РџСЂРёС‡РёРЅР°: <b>{_q(reason)}</b>")
-    if was_blocked:
-        lines.append("Р—Р°РїРёСЃСЊ РѕР±РЅРѕРІР»РµРЅР°.")
-    elif existing_user:
-        if existing_user.get("is_active") is False:
-            lines.append("РџСЂРѕС„РёР»СЊ СѓР¶Рµ Р±С‹Р» РЅРµР°РєС‚РёРІРµРЅ. Р‘Р»РѕРє РїРѕ ID РґРѕР±Р°РІР»РµРЅ РїРѕРІРµСЂС… СЌС‚РѕРіРѕ СЃРѕСЃС‚РѕСЏРЅРёСЏ.")
-        else:
-            lines.append("РџСЂРѕС„РёР»СЊ РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ РґРµР°РєС‚РёРІРёСЂРѕРІР°РЅ, С‡С‚РѕР±С‹ РѕСЃС‚Р°РЅРѕРІРёС‚СЊ РґРѕСЃС‚СѓРї Рё СЂР°Р±РѕС‡РёРµ РЅР°РїРѕРјРёРЅР°РЅРёСЏ.")
-    else:
-        lines.append("Р•СЃР»Рё СЌС‚РѕС‚ ID РІРїРµСЂРІС‹Рµ РЅР°РїРёС€РµС‚ Р±РѕС‚Сѓ, СЂРµРіРёСЃС‚СЂР°С†РёСЏ РЅРµ РЅР°С‡РЅС‘С‚СЃСЏ.")
+        lines.append("Если этот ID впервые напишет боту, регистрация не начнётся.")
     await message.answer("\n".join(lines))
 
 
@@ -406,57 +367,27 @@ async def command_unblock(message: types.Message, db: Database):
 
     telegram_id, _ = _parse_admin_id_command(message.text)
     if telegram_id is None:
-        await message.answer("<b>Command format</b>\n\n<code>/unblock 123456789</code>")
+        await message.answer("✅ <b>Формат команды</b>\n\n<code>/unblock 123456789</code>")
         return
 
     block_entry = await db.get_telegram_block(telegram_id)
     if not block_entry:
-        await message.answer(f"ID <code>{telegram_id}</code> is not in the block list.")
+        await message.answer(f"⚠️ ID <code>{telegram_id}</code> нет в списке блокировок.")
         return
 
     result = await db.unblock_telegram_id(telegram_id)
     lines = [
-        "<b>Block removed</b>",
+        "✅ <b>Блокировка снята</b>",
         "",
         f"Telegram ID: <code>{telegram_id}</code>",
-        f"Profile: <b>{_format_block_entry_label(block_entry)}</b>",
+        f"Профиль: <b>{_format_block_entry_label(block_entry)}</b>",
     ]
     if block_entry.get("reason"):
-        lines.append(f"Previous reason: <b>{_q(block_entry.get('reason'))}</b>")
+        lines.append(f"Прежняя причина: <b>{_q(block_entry.get('reason'))}</b>")
     if result.get("reactivated"):
-        lines.append("The profile was reactivated.")
+        lines.append("Профиль снова активирован.")
     else:
-        lines.append("Only the hard ID block was removed.")
-    await message.answer("\n".join(lines))
-    return
-
-    telegram_id, _ = _parse_admin_id_command(message.text)
-    if telegram_id is None:
-        await message.answer(
-            "вњ… <b>Р¤РѕСЂРјР°С‚ РєРѕРјР°РЅРґС‹</b>\n\n<code>/unblock 123456789</code>"
-        )
-        return
-
-    block_entry = await db.get_telegram_block(telegram_id)
-    if not block_entry:
-        await message.answer(
-            f"вљ пёЏ ID <code>{telegram_id}</code> РЅРµС‚ РІ СЃРїРёСЃРєРµ Р±Р»РѕРєРёСЂРѕРІРѕРє."
-        )
-        return
-
-    result = await db.unblock_telegram_id(telegram_id)
-    lines = [
-        "вњ… <b>Р‘Р»РѕРєРёСЂРѕРІРєР° СЃРЅСЏС‚Р°</b>",
-        "",
-        f"Telegram ID: <code>{telegram_id}</code>",
-        f"РџСЂРѕС„РёР»СЊ: <b>{_format_block_entry_label(block_entry)}</b>",
-    ]
-    if block_entry.get("reason"):
-        lines.append(f"РџСЂРµР¶РЅСЏСЏ РїСЂРёС‡РёРЅР°: <b>{_q(block_entry.get('reason'))}</b>")
-    if result.get("reactivated"):
-        lines.append("РџСЂРѕС„РёР»СЊ СЃРЅРѕРІР° Р°РєС‚РёРІРёСЂРѕРІР°РЅ.")
-    else:
-        lines.append("Р–С‘СЃС‚РєР°СЏ Р±Р»РѕРєРёСЂРѕРІРєР° РїРѕ ID СЃРЅСЏС‚Р°. Р•СЃР»Рё РїСЂРѕС„РёР»СЊ Р±С‹Р» РЅРµР°РєС‚РёРІРµРЅ СЂР°РЅСЊС€Рµ, РѕРЅ С‚Р°Рє Рё РѕСЃС‚Р°РЅРµС‚СЃСЏ РІС‹РєР»СЋС‡РµРЅРЅС‹Рј.")
+        lines.append("Жёсткая блокировка по ID снята. Если профиль был неактивен раньше, он так и останется выключенным.")
     await message.answer("\n".join(lines))
 
 
@@ -467,52 +398,26 @@ async def command_blocked(message: types.Message, db: Database):
 
     rows = list(await db.get_blocked_telegram_ids(limit=20) or [])
     if not rows:
-        await message.answer("<b>Blocked Telegram IDs</b>\n\nList is empty.")
+        await message.answer("🚫 <b>Блокировки по Telegram ID</b>\n\nСписок пока пуст.")
         return
 
     lines = [
-        "<b>Blocked Telegram IDs</b>",
+        "🚫 <b>Блокировки по Telegram ID</b>",
         "",
-        f"Shown: <b>{len(rows)}</b>",
+        f"Показано: <b>{len(rows)}</b>",
     ]
     for index, row in enumerate(rows, 1):
         blocked_at = row.get("blocked_at")
         blocked_at_label = blocked_at.strftime("%d.%m.%Y %H:%M") if blocked_at else "-"
-        role = row.get("role") or "no profile"
-        status = "inactive" if row.get("is_active") is False else "active"
-        reason = row.get("reason") or "no reason"
+        role = row.get("role") or "нет профиля"
+        status = "неактивен" if row.get("is_active") is False else "активен"
+        reason = row.get("reason") or "без причины"
         lines.extend([
             "",
             f"{index}. <code>{row['telegram_id']}</code>  |  <b>{_format_block_entry_label(row)}</b>",
-            f"Status: <b>{_q(role)}</b>, {status}",
-            f"When: <b>{blocked_at_label}</b>",
-            f"Reason: <b>{_q(reason)}</b>",
-        ])
-    await message.answer("\n".join(lines))
-    return
-
-    rows = list(await db.get_blocked_telegram_ids(limit=20) or [])
-    if not rows:
-        await message.answer("рџљ« <b>Р‘Р»РѕРєРёСЂРѕРІРєРё РїРѕ Telegram ID</b>\n\nРЎРїРёСЃРѕРє РїРѕРєР° РїСѓСЃС‚.")
-        return
-
-    lines = [
-        "рџљ« <b>Р‘Р»РѕРєРёСЂРѕРІРєРё РїРѕ Telegram ID</b>",
-        "",
-        f"РџРѕРєР°Р·Р°РЅРѕ: <b>{len(rows)}</b>",
-    ]
-    for index, row in enumerate(rows, 1):
-        blocked_at = row.get("blocked_at")
-        blocked_at_label = blocked_at.strftime("%d.%m.%Y %H:%M") if blocked_at else "вЂ”"
-        role = row.get("role") or "РЅРµС‚ РїСЂРѕС„РёР»СЏ"
-        status = "РЅРµР°РєС‚РёРІРµРЅ" if row.get("is_active") is False else "Р°РєС‚РёРІРµРЅ"
-        reason = row.get("reason") or "Р±РµР· РїСЂРёС‡РёРЅС‹"
-        lines.extend([
-            "",
-            f"{index}. <code>{row['telegram_id']}</code>  |  <b>{_format_block_entry_label(row)}</b>",
-            f"РЎС‚Р°С‚СѓСЃ РїСЂРѕС„РёР»СЏ: <b>{_q(role)}</b>, {status}",
-            f"РљРѕРіРґР°: <b>{blocked_at_label}</b>",
-            f"РџСЂРёС‡РёРЅР°: <b>{_q(reason)}</b>",
+            f"Статус профиля: <b>{_q(role)}</b>, {status}",
+            f"Когда: <b>{blocked_at_label}</b>",
+            f"Причина: <b>{_q(reason)}</b>",
         ])
     await message.answer("\n".join(lines))
 

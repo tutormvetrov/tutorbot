@@ -557,7 +557,7 @@ def build_admin_study_plan_preview_text(parsed: dict, summary: str) -> str:
         preview += "\n…"
 
     lines = [
-        "📄 <b>Preview PDF-плана</b>",
+        "📄 <b>Предпросмотр PDF-плана</b>",
         "",
         f"Файл: <b>{html.quote(parsed.get('file_name') or 'PDF-план')}</b>",
         f"Страниц: <b>{int(parsed.get('pages_count') or 0)}</b>",
