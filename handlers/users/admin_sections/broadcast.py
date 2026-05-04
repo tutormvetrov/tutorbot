@@ -1,3 +1,5 @@
+from datetime import date
+
 from aiogram import Router, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -11,6 +13,7 @@ from keyboards.inline import (
     make_recipient_select_keyboard,
     make_reschedule_offer_keyboard,
     make_teacher_reply_keyboard,
+    segment_filter_keyboard,
 )
 from utils.scheduler import build_reschedule_slot_payloads
 from states.registration import AdminBroadcast
@@ -23,6 +26,7 @@ from utils.ui_text import (
     admin_broadcast_recipients_text,
     build_broadcast_preview_block,
     build_broadcast_send_result_text,
+    compute_student_stage,
 )
 
 from handlers.users.admin_sections.common import (
@@ -33,6 +37,8 @@ from handlers.users.admin_sections.common import (
 )
 
 router = Router()
+
+_EMPTY_FILTERS: dict = {"stages": [], "levels": [], "formats": [], "balance": [], "types": []}
 
 
 def build_illness_broadcast_text(_: str | None = None) -> str:
@@ -82,6 +88,28 @@ def _resolve_broadcast_text(kind: str | None, speech_style: str | None, fallback
         return template
     return fallback_text
 
+
+def _balance_bucket(balance: int) -> str:
+    if balance == 0:
+        return "none"
+    if balance <= 2:
+        return "low"
+    return "has"
+
+
+def _matches_segment_filters(student: dict, filters: dict) -> bool:
+    if not any(filters.values()):
+        return True
+    checks = [
+        (filters["stages"],  student.get("stage", "")),
+        (filters["levels"],  student.get("level", "")),
+        (filters["formats"], student.get("lesson_format", "")),
+        (filters["balance"], student.get("balance_bucket", "")),
+        (filters["types"],   student.get("student_type", "")),
+    ]
+    return any(bucket and val in bucket for bucket, val in checks)
+
+
 def _build_recipient_select_text(
     broadcast_preview: str,
     selected_count: int,
@@ -96,9 +124,69 @@ def _build_recipient_select_text(
     )
 
 
-async def _enter_recipient_select(target, state: FSMContext, db: Database, broadcast_preview: str):
-    students = await db.get_all_students()
+async def _enter_segment_filter(target, state: FSMContext, db: Database, broadcast_preview: str):
+    students = await db.get_students_for_broadcast()
+
     if not students:
+        msg = ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT
+        back_kb = make_back_button_keyboard("◀️ К панели", "admin:home")
+        if hasattr(target, 'message'):
+            await target.message.edit_text(msg, reply_markup=back_kb)
+            await target.answer()
+        else:
+            await target.answer(msg, reply_markup=back_kb)
+        await state.clear()
+        return
+
+    today = date.today()
+    enriched = []
+    for s in students:
+        stage = compute_student_stage(
+            s.get("cached_first_lesson_date"),
+            override=s.get("student_stage_override"),
+            today=today,
+        )
+        enriched.append({
+            "telegram_id": s["telegram_id"],
+            "full_name": s["full_name"],
+            "speech_style": s.get("speech_style") or "formal",
+            "level": s.get("level") or "",
+            "lesson_format": s.get("lesson_format") or "online",
+            "balance_bucket": _balance_bucket(s.get("balance") or 0),
+            "student_type": "pair" if s.get("is_pair") else "solo",
+            "stage": stage,
+        })
+
+    filters = dict(_EMPTY_FILTERS)
+    await state.update_data(broadcast_students_cache=enriched, segment_filters=filters)
+    await state.set_state(AdminBroadcast.waiting_for_segment_filter)
+
+    text = (
+        "🎯 <b>Фильтр получателей</b>\n\n"
+        "Выберите сегменты. Ученик попадёт в рассылку, если совпадает <b>хотя бы один</b> фильтр.\n"
+        "Без фильтров — рассылка уйдёт <b>всем</b> активным ученикам."
+    )
+    kb = segment_filter_keyboard(filters, len(enriched))
+    if hasattr(target, "message"):
+        await target.message.edit_text(text, reply_markup=kb)
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=kb)
+
+
+async def _enter_recipient_select(
+    target,
+    state: FSMContext,
+    db: Database,
+    broadcast_preview: str,
+    preselected_ids: set[int] | None = None,
+):
+    data = await state.get_data()
+    raw = data.get("broadcast_students_cache")
+    if raw is None:
+        raw = await db.get_all_students()
+
+    if not raw:
         msg = ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT
         back_kb = make_back_button_keyboard("◀️ К панели", "admin:home")
         if hasattr(target, 'message'):
@@ -111,24 +199,25 @@ async def _enter_recipient_select(target, state: FSMContext, db: Database, broad
 
     cache = [
         {
-            'telegram_id': student['telegram_id'],
-            'full_name': student['full_name'],
-            'speech_style': student.get('speech_style') or 'formal',
+            'telegram_id': s['telegram_id'],
+            'full_name': s['full_name'],
+            'speech_style': s.get('speech_style') or 'formal',
         }
-        for student in students
+        for s in raw
     ]
-    await state.update_data(recipient_ids=[], students_cache=cache)
+    initial_selected = preselected_ids if preselected_ids is not None else set()
+    await state.update_data(recipient_ids=list(initial_selected), students_cache=cache)
     await state.set_state(AdminBroadcast.waiting_for_recipients)
 
     total = len(cache)
     data = await state.get_data()
     text = _build_recipient_select_text(
         broadcast_preview,
-        0,
+        len(initial_selected),
         total,
         data.get("broadcast_mode", "text"),
     )
-    kb = make_recipient_select_keyboard(cache, set())
+    kb = make_recipient_select_keyboard(cache, initial_selected)
     if hasattr(target, 'message'):
         await target.message.edit_text(text, reply_markup=kb)
         await target.answer()
@@ -229,7 +318,7 @@ async def admin_broadcast_confirm_text(callback_query: types.CallbackQuery, stat
         await callback_query.answer()
         return
     data = await state.get_data()
-    await _enter_recipient_select(
+    await _enter_segment_filter(
         callback_query,
         state,
         db,
@@ -250,7 +339,10 @@ async def admin_broadcast_edit_text(callback_query: types.CallbackQuery, state: 
     await callback_query.answer()
 
 
-@router.callback_query(lambda c: c.data == 'bc_back_preview', StateFilter(AdminBroadcast.waiting_for_recipients))
+@router.callback_query(
+    lambda c: c.data == 'bc_back_preview',
+    StateFilter(AdminBroadcast.waiting_for_recipients, AdminBroadcast.waiting_for_segment_filter),
+)
 async def admin_broadcast_back_preview(callback_query: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
@@ -263,6 +355,81 @@ async def admin_broadcast_back_preview(callback_query: types.CallbackQuery, stat
         data.get("broadcast_preview") or data.get("broadcast_text", ""),
     )
 
+
+# ── segment filter handlers ───────────────────────────────────────────────────
+
+@router.callback_query(
+    lambda c: c.data.startswith("bc_filter:") and len(c.data.split(":")) == 3,
+    StateFilter(AdminBroadcast.waiting_for_segment_filter),
+)
+async def bc_filter_toggle(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    _, cat, val = callback_query.data.split(":")
+    data = await state.get_data()
+    filters = data.get("segment_filters", dict(_EMPTY_FILTERS))
+
+    bucket = filters.get(cat, [])
+    filters[cat] = [v for v in bucket if v != val] if val in bucket else bucket + [val]
+    await state.update_data(segment_filters=filters)
+
+    students = data.get("broadcast_students_cache", [])
+    count = sum(1 for s in students if _matches_segment_filters(s, filters))
+    await callback_query.message.edit_reply_markup(reply_markup=segment_filter_keyboard(filters, count))
+    await callback_query.answer()
+
+
+@router.callback_query(
+    lambda c: c.data == "bc_filter:reset",
+    StateFilter(AdminBroadcast.waiting_for_segment_filter),
+)
+async def bc_filter_reset(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    filters = dict(_EMPTY_FILTERS)
+    await state.update_data(segment_filters=filters)
+    data = await state.get_data()
+    count = len(data.get("broadcast_students_cache", []))
+    await callback_query.message.edit_reply_markup(reply_markup=segment_filter_keyboard(filters, count))
+    await callback_query.answer()
+
+
+@router.callback_query(
+    lambda c: c.data == "bc_filter:apply",
+    StateFilter(AdminBroadcast.waiting_for_segment_filter),
+)
+async def bc_filter_apply(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    data = await state.get_data()
+    filters = data.get("segment_filters", dict(_EMPTY_FILTERS))
+    students = data.get("broadcast_students_cache", [])
+    preselected = {s["telegram_id"] for s in students if _matches_segment_filters(s, filters)}
+    broadcast_preview = data.get("broadcast_preview") or data.get("broadcast_text", "")
+    await _enter_recipient_select(callback_query, state, db, broadcast_preview, preselected)
+
+
+@router.callback_query(
+    lambda c: c.data == "bc_filter:skip",
+    StateFilter(AdminBroadcast.waiting_for_segment_filter),
+)
+async def bc_filter_skip(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    data = await state.get_data()
+    broadcast_preview = data.get("broadcast_preview") or data.get("broadcast_text", "")
+    await _enter_recipient_select(callback_query, state, db, broadcast_preview, preselected_ids=None)
+
+
+# ── recipient select handlers ─────────────────────────────────────────────────
 
 @router.callback_query(
     lambda c: c.data.startswith('bc_toggle:'),
@@ -316,11 +483,6 @@ async def bc_select_all_none(callback_query: types.CallbackQuery, state: FSMCont
         data.get("broadcast_mode", "text"),
     )
     await callback_query.message.edit_text(text, reply_markup=make_recipient_select_keyboard(students, selected))
-    await callback_query.answer()
-
-
-@router.callback_query(lambda c: c.data == 'noop')
-async def noop_callback(callback_query: types.CallbackQuery):
     await callback_query.answer()
 
 

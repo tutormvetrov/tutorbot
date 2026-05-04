@@ -44,6 +44,7 @@ class AdminCreatePair(StatesGroup):
 class AdminBroadcast(StatesGroup):
     waiting_for_text = State()
     waiting_for_text_confirm = State()
+    waiting_for_segment_filter = State()
     waiting_for_recipients = State()
 
 
@@ -113,3 +114,7 @@ class AdminAddResource(StatesGroup):
 
 class OnboardingGoal(StatesGroup):
     waiting_for_text = State()
+
+
+class AdminSetTariff(StatesGroup):
+    waiting_for_tariff_text = State()

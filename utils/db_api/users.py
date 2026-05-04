@@ -272,6 +272,26 @@ class DatabaseUserMixin:
             )
         return updated
 
+    async def get_active_parent_for_student(self, student_id: int):
+        """Return the first active parent for a student, or None."""
+        return await self.execute(
+            """SELECT u.telegram_id, u.full_name, u.speech_style
+            FROM student_parent sp
+            JOIN users u ON u.telegram_id = sp.parent_id
+                AND u.role = 'parent' AND u.is_active = true
+            WHERE sp.student_id = $1 AND sp.is_active = true
+            LIMIT 1""",
+            student_id,
+            fetchrow=True,
+        )
+
+    async def update_tariff_text(self, telegram_id: int, tariff_text: str | None):
+        await self.execute(
+            "UPDATE users SET tariff_text = $1 WHERE telegram_id = $2",
+            tariff_text, telegram_id,
+            execute=True,
+        )
+
     async def create_student_pair(
         self,
         primary_student_id: int,
@@ -573,32 +593,6 @@ class DatabaseUserMixin:
             group_id,
             execute=True,
         )
-
-    async def get_parent_children(self, parent_id: int) -> list[str]:
-        links = await self.execute(
-            """
-            SELECT sp.student_info, sp.student_id, u.full_name
-            FROM student_parent sp
-            LEFT JOIN users u
-              ON u.telegram_id = sp.student_id
-            WHERE sp.parent_id = $1
-              AND sp.is_active = true
-            ORDER BY sp.id
-            """,
-            parent_id,
-            fetch=True,
-        )
-        items = []
-        seen = set()
-        for link in links:
-            label = link.get("full_name") or link.get("student_info") or ""
-            dedupe_key = normalize_person_name(extract_student_name(label))
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            if label:
-                items.append(label)
-        return items
 
     async def get_parent_children_overview(self, parent_id: int):
         return await self.execute(
@@ -916,26 +910,6 @@ class DatabaseUserMixin:
             "payments_as_payer": payments_as_payer,
         }
 
-    async def get_students_with_calendar_alias_counts(self):
-        return await self.execute(
-            """
-            SELECT
-                u.telegram_id,
-                u.full_name,
-                COALESCE(COUNT(csl.id), 0)::int AS alias_count
-            FROM users u
-            LEFT JOIN calendar_student_links csl
-              ON csl.student_id = u.telegram_id
-             AND csl.is_active = true
-            WHERE u.role = 'student'
-              AND u.is_active = true
-              AND COALESCE(u.is_internal_account, false) = false
-            GROUP BY u.telegram_id, u.full_name
-            ORDER BY u.full_name
-            """,
-            fetch=True,
-        )
-
     async def deactivate_student(self, telegram_id: int):
         await self.execute(
             "UPDATE users SET is_active = false WHERE telegram_id = $1",
@@ -985,6 +959,13 @@ class DatabaseUserMixin:
     async def delete_user_fully(self, telegram_id: int):
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM user_journey_events WHERE user_id = $1", telegram_id
+                )
+                await conn.execute(
+                    "DELETE FROM admin_inbox WHERE payload->>'telegram_id' = $1::text",
+                    telegram_id,
+                )
                 await conn.execute("DELETE FROM calendar_student_links WHERE student_id = $1", telegram_id)
                 await conn.execute("DELETE FROM homework WHERE student_id = $1", telegram_id)
                 await conn.execute("DELETE FROM lessons WHERE student_id = $1", telegram_id)
@@ -1055,7 +1036,8 @@ class DatabaseUserMixin:
                 u.full_name,
                 COALESCE(u.speech_style, 'formal') AS speech_style,
                 COALESCE(u.lesson_duration_minutes, 90) AS lesson_duration_minutes,
-                first_lesson.lesson_date AS first_lesson_date
+                first_lesson.lesson_date AS first_lesson_date,
+                u.tariff_text
             FROM users u
             JOIN LATERAL (
                 SELECT l.lesson_date
@@ -1110,6 +1092,41 @@ class DatabaseUserMixin:
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
             GROUP BY u.telegram_id, u.full_name, COALESCE(u.speech_style, 'formal')
+            ORDER BY u.full_name
+            """,
+            fetch=True,
+        )
+
+    async def get_students_for_broadcast(self):
+        return await self.execute(
+            """
+            SELECT
+                u.telegram_id,
+                u.full_name,
+                COALESCE(u.speech_style, 'formal') AS speech_style,
+                COALESCE(u.level, '') AS level,
+                COALESCE(u.lesson_format, 'online') AS lesson_format,
+                u.cached_first_lesson_date,
+                u.student_stage_override,
+                COALESCE(SUM(p.lessons_remaining), 0)::int AS balance,
+                EXISTS (
+                    SELECT 1
+                    FROM student_group_members sgm
+                    JOIN student_groups sg ON sg.id = sgm.group_id
+                    WHERE sgm.student_id = u.telegram_id
+                      AND sg.group_type = 'pair'
+                      AND sg.is_active = true
+                ) AS is_pair
+            FROM users u
+            LEFT JOIN payments p
+              ON p.student_id = u.telegram_id
+             AND p.status = 'confirmed'
+             AND p.lessons_remaining > 0
+            WHERE u.role = 'student'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+            GROUP BY u.telegram_id, u.full_name, u.speech_style, u.level,
+                     u.lesson_format, u.cached_first_lesson_date, u.student_stage_override
             ORDER BY u.full_name
             """,
             fetch=True,

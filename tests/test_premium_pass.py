@@ -18,11 +18,14 @@ from handlers.users.callbacks import (
     process_self_delete_review,
 )
 from handlers.users.admin_sections.broadcast import (
+    _balance_bucket,
+    _matches_segment_filters,
     admin_broadcast_back_preview,
     admin_broadcast_confirm_text,
     admin_broadcast_select,
     admin_broadcast_start,
     admin_broadcast_text_entered,
+    bc_filter_skip,
     bc_send,
     bc_toggle_recipient,
 )
@@ -196,11 +199,18 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
         class FakeDB:
             def __init__(self):
                 self.students = [
-                    {"telegram_id": 11, "full_name": "Анна"},
-                    {"telegram_id": 22, "full_name": "Борис"},
+                    {"telegram_id": 11, "full_name": "Анна", "speech_style": "informal",
+                     "level": "B1", "lesson_format": "online", "balance": 3,
+                     "cached_first_lesson_date": None, "student_stage_override": None, "is_pair": False},
+                    {"telegram_id": 22, "full_name": "Борис", "speech_style": "formal",
+                     "level": "A2", "lesson_format": "offline", "balance": 1,
+                     "cached_first_lesson_date": None, "student_stage_override": None, "is_pair": False},
                 ]
 
             async def get_all_students(self):
+                return list(self.students)
+
+            async def get_students_for_broadcast(self):
                 return list(self.students)
 
         message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot)
@@ -222,6 +232,11 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
         await state.update_data(broadcast_text="Проверьте связи и напомните о переносе урока.")
         confirm_callback = DummyCallbackQuery("bc_confirm", message=message, user_id=config.ADMIN_ID, bot=bot)
         await admin_broadcast_confirm_text(confirm_callback, state, FakeDB())
+
+        self.assertIn("Фильтр получателей", message.edits[-1])
+
+        skip_callback = DummyCallbackQuery("bc_filter:skip", message=message, user_id=config.ADMIN_ID, bot=bot)
+        await bc_filter_skip(skip_callback, state, FakeDB())
 
         self.assertIn("Выберите получателей рассылки", message.edits[-1])
         self.assertEqual(_keyboard_texts(message.reply_markups[-1])[0], "☐ Анна")
@@ -302,6 +317,9 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
             async def get_all_students(self):
                 return []
 
+            async def get_students_for_broadcast(self):
+                return []
+
         callback = DummyCallbackQuery(
             "admin:broadcast",
             message=DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot),
@@ -322,6 +340,40 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Рассылка пока недоступна", callback.message.edits[-1])
         self.assertEqual(state.state, None)
+
+
+class SegmentFilterLogicTest(unittest.TestCase):
+    def _student(self, **kwargs):
+        base = {
+            "telegram_id": 1, "full_name": "Тест",
+            "stage": "new", "level": "A1", "lesson_format": "online",
+            "balance_bucket": "has", "student_type": "solo",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_no_active_filters_matches_everyone(self):
+        filters = {"stages": [], "levels": [], "formats": [], "balance": [], "types": []}
+        self.assertTrue(_matches_segment_filters(self._student(), filters))
+
+    def test_single_matching_filter_includes_student(self):
+        filters = {"stages": ["new"], "levels": [], "formats": [], "balance": [], "types": []}
+        self.assertTrue(_matches_segment_filters(self._student(stage="new"), filters))
+
+    def test_non_matching_filter_excludes_student(self):
+        filters = {"stages": ["veteran"], "levels": [], "formats": [], "balance": [], "types": []}
+        self.assertFalse(_matches_segment_filters(self._student(stage="new"), filters))
+
+    def test_or_logic_across_categories(self):
+        filters = {"stages": ["veteran"], "levels": [], "formats": ["online"], "balance": [], "types": []}
+        self.assertTrue(_matches_segment_filters(self._student(stage="new", lesson_format="online"), filters))
+
+    def test_balance_bucket_thresholds(self):
+        self.assertEqual(_balance_bucket(0), "none")
+        self.assertEqual(_balance_bucket(1), "low")
+        self.assertEqual(_balance_bucket(2), "low")
+        self.assertEqual(_balance_bucket(3), "has")
+        self.assertEqual(_balance_bucket(10), "has")
 
 
 class BroadcastHelperTextTest(unittest.TestCase):

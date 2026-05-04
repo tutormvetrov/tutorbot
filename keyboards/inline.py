@@ -266,7 +266,7 @@ def make_lesson_followup_keyboard(lesson_id: int, student_id: int) -> InlineKeyb
 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🎯 Сегодня", "admin:today")],
     [_btn("👥 Ученики", "admin:cat:students"), _btn("📚 Учебный процесс", "admin:cat:education")],
-    [_btn("💬 Inbox", "admin:inbox"), _btn("📢 Рассылка", "admin:broadcast")],
+    [_btn("💬 Входящие", "admin:inbox"), _btn("📢 Рассылка", "admin:broadcast")],
     [_btn("⚙️ Сервис", "admin:cat:service")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
@@ -319,6 +319,30 @@ broadcast_preview_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("✏️ Изменить сообщение", "bc_edit_text")],
     [_btn("❌ Отмена", "cancel_fsm")],
 ])
+
+
+_STAGE_LABELS = {"new": "🆕 Новый", "regular": "📗 Основной", "veteran": "🏅 Давний"}
+_BALANCE_LABELS = {"has": "💰 Есть", "low": "Мало (1–2)", "none": "Нет"}
+_FORMAT_LABELS = {"online": "💻 Онлайн", "offline": "Офлайн"}
+_TYPE_LABELS = {"solo": "👤 Один", "pair": "👥 Пара"}
+
+
+def segment_filter_keyboard(filters: dict, count: int) -> InlineKeyboardMarkup:
+    def _toggle(label: str, cat: str, val: str) -> dict:
+        mark = "✅" if val in filters.get(cat, []) else "☐"
+        return _btn(f"{mark} {label}", f"bc_filter:{cat}:{val}")
+
+    rows = [
+        [_toggle(lbl, "stages", v) for v, lbl in _STAGE_LABELS.items()],
+        [_toggle(v, "levels", v) for v in ("A1", "A2", "B1", "B2", "C1", "C2")],
+        [_toggle(lbl, "formats", v) for v, lbl in _FORMAT_LABELS.items()],
+        [_toggle(lbl, "balance", v) for v, lbl in _BALANCE_LABELS.items()],
+        [_toggle(lbl, "types", v) for v, lbl in _TYPE_LABELS.items()],
+        [_btn("✖️ Сбросить", "bc_filter:reset"), _btn(f"📤 Показать {count} чел. →", "bc_filter:apply")],
+        [_btn("Без фильтров → все ученики", "bc_filter:skip")],
+        [_btn("◀️ К предпросмотру", "bc_back_preview"), _btn("❌ Отмена", "cancel_fsm")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_recipient_select_keyboard(students: list, selected_ids: set) -> InlineKeyboardMarkup:
@@ -567,6 +591,7 @@ def make_admin_student_settings_keyboard(
     toggle_to = "online" if is_offline else "offline"
     toggle_label = "Переключить на онлайн" if is_offline else "Переключить на очно"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("💳 Тариф", f"admin:student_tariff:{telegram_id}:{page}")],
         [_btn(f"⏱ Длительность урока: {lesson_duration_minutes} мин", f"admin:student_duration:{telegram_id}:{page}")],
         [_btn(f"{format_label} · {toggle_label}", f"admin:student_format:{telegram_id}:{page}:{toggle_to}")],
         [_btn(
@@ -746,12 +771,17 @@ def make_admin_parents_list_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_admin_parent_card_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("🪟 Открыть как родитель", f"admin:parent_preview_select:{telegram_id}:{page}")],
-        [_btn("🛡 Опасные действия", f"admin:parent_danger:{telegram_id}:{page}")],
-        [_btn("◀️ К списку родителей", f"admin:parents:page:{page}")],
-    ])
+def make_admin_parent_card_keyboard(telegram_id: int, page: int, children: list[dict] | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if children:
+        for child in children:
+            if child.get("link_status") == "linked" and child.get("student_id"):
+                child_name = child.get("full_name") or child.get("student_info") or "?"
+                rows.append([_btn(f"💳 Тариф: {child_name}", f"admin:student_tariff:{child['student_id']}:0")])
+    rows.append([_btn("🪟 Открыть как родитель", f"admin:parent_preview_select:{telegram_id}:{page}")])
+    rows.append([_btn("🛡 Опасные действия", f"admin:parent_danger:{telegram_id}:{page}")])
+    rows.append([_btn("◀️ К списку родителей", f"admin:parents:page:{page}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_admin_parent_danger_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
@@ -1236,7 +1266,7 @@ def make_admin_inbox_item_keyboard(event_id: int, kind: str) -> InlineKeyboardMa
     rows: list[list[InlineKeyboardButton]] = []
     rows.append([_btn("✉️ Ответить", f"admin:inbox:reply:{event_id}")])
     rows.append([_btn("✓ Закрыть", f"admin:inbox:item:{event_id}:close")])
-    rows.append([_btn("◀️ К Inbox", "admin:inbox")])
+    rows.append([_btn("◀️ К входящим", "admin:inbox")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
