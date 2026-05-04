@@ -409,15 +409,17 @@ class KeyboardHelpersTest(unittest.TestCase):
             texts,
             [
                 "🎯 Сегодня",
+                "📊 Пульс",
                 "👥 Ученики",
                 "📚 Учебный процесс",
-                "💬 Inbox",
+                "💬 Входящие",
                 "📢 Рассылка",
                 "⚙️ Сервис",
                 "◀️ Главное меню",
             ],
         )
         self.assertIn("admin:today", callbacks)
+        self.assertIn("admin:pulse", callbacks)
         self.assertIn("admin:inbox", callbacks)
         self.assertNotIn("🧪 Просмотр ролей", texts)
 
@@ -508,7 +510,7 @@ class AdminInboxKeyboardTest(unittest.TestCase):
         callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
         self.assertIn("✉️ Ответить", texts)
         self.assertIn("✓ Закрыть", texts)
-        self.assertIn("◀️ К Inbox", texts)
+        self.assertIn("◀️ К входящим", texts)
         self.assertIn("admin:inbox:reply:42", callbacks)
         self.assertIn("admin:inbox:item:42:close", callbacks)
         self.assertIn("admin:inbox", callbacks)

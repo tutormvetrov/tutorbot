@@ -19,48 +19,26 @@ from utils.speech import choose_form, speech_style_label
 from utils.time import business_today
 
 
-def _fix_utf8_mojibake(value: str) -> str:
-    try:
-        return value.encode("cp1251").decode("utf-8")
-    except Exception:
-        return value
-
 MAIN_MENU_TEXT = "📍 <b>Главное меню</b>\n\nВыберите, что нужно сейчас."
 ACTION_CANCELLED_TEXT = "❌ Действие отменено."
 REGISTRATION_REQUIRED_TEXT = "⚠️ Сначала зарегистрируйтесь через /start"
 DEACTIVATED_ACCOUNT_TEXT = "⛔️ Ваш аккаунт деактивирован. Обратитесь к преподавателю."
-BLOCKED_ACCOUNT_TEXT = _fix_utf8_mojibake("рџљ« Р”РѕСЃС‚СѓРї Рє Р±РѕС‚Сѓ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ. Р•СЃР»Рё СЌС‚Рѕ РѕС€РёР±РєР°, РѕР±СЂР°С‚РёС‚РµСЃСЊ Рє РїСЂРµРїРѕРґР°РІР°С‚РµР»СЋ.")
-BLOCKED_ACCOUNT_ALERT = _fix_utf8_mojibake("Р”РѕСЃС‚СѓРї Рє Р±РѕС‚Сѓ Р·Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ.")
+BLOCKED_ACCOUNT_TEXT = "🚫 Доступ к боту заблокирован. Если это ошибка, обратитесь к преподавателю."
+BLOCKED_ACCOUNT_ALERT = "Доступ к боту заблокирован."
 
 ADMIN_HOME_TEXT = (
     "🛠 <b>Панель администратора</b>\n\n"
     "Сверху — живая сводка по боту. Ниже — четыре рабочих раздела."
 )
-ADMIN_STUDENTS_CATEGORY_TEXT = (
-    "👥 <b>Ученики</b>\n\n"
-    "Сначала откройте список учеников или родителей, либо добавьте нового ученика.\n"
-    "Здесь же находятся формат занятий, обращение и действия по доступу."
-)
-ADMIN_EDUCATION_CATEGORY_TEXT = (
-    "📚 <b>Учебный процесс</b>\n\n"
-    "Здесь собраны все учебные действия: занятия, оплаты, домашние задания и заморозки."
-)
+ADMIN_STUDENTS_CATEGORY_TEXT = "👥 <b>Ученики</b>"
+ADMIN_EDUCATION_CATEGORY_TEXT = "📚 <b>Учебный процесс</b>"
 ADMIN_COMMUNICATION_CATEGORY_TEXT = (
     "📢 <b>Коммуникации</b>\n\n"
     "Рассылки, ответы ученикам и служебные сообщения."
 )
-ADMIN_SERVICE_CATEGORY_TEXT = (
-    "⚙️ <b>Сервис</b>\n\n"
-    "Здесь собраны мониторинг бота и рабочий проектный контекст."
-)
-ADMIN_SERVICE_MONITORING_TEXT = (
-    "📊 <b>Мониторинг</b>\n\n"
-    "Здесь собраны синхронизация Calendar, отчёты и здоровье бота."
-)
-ADMIN_SERVICE_CONTEXT_TEXT = (
-    "🧠 <b>Контекст и проект</b>\n\n"
-    "Здесь лежат тональность бренда и рабочие заметки для следующих сессий."
-)
+ADMIN_SERVICE_CATEGORY_TEXT = "⚙️ <b>Сервис</b>"
+ADMIN_SERVICE_MONITORING_TEXT = "📊 <b>Мониторинг</b>"
+ADMIN_SERVICE_CONTEXT_TEXT = "🧠 <b>Контекст и проект</b>"
 ADMIN_SYNC_IN_PROGRESS_TEXT = "🔄 Синхронизирую Google Calendar..."
 ADMIN_SYNC_ERROR_HINT = (
     "Проверьте путь в <b>GOOGLE_CREDENTIALS_FILE</b> "
@@ -69,8 +47,8 @@ ADMIN_SYNC_ERROR_HINT = (
 
 ADMIN_NO_REGISTERED_STUDENTS_TEXT = "⚠️ Нет зарегистрированных учеников."
 ADMIN_NO_ACTIVE_STUDENTS_TEXT = "👥 Нет активных учеников."
-ADMIN_STUDENTS_EMPTY_TEXT = "👥 <b>Список учеников</b>\n\nПока здесь пусто. Как только появятся ученики, список заполнится автоматически."
-ADMIN_PARENTS_EMPTY_TEXT = "👨‍👩‍👧 <b>Список родителей</b>\n\nПока здесь пусто. Как только появятся родители, список заполнится автоматически."
+ADMIN_STUDENTS_EMPTY_TEXT = "👥 <b>Список учеников</b>\n\nУчеников пока нет."
+ADMIN_PARENTS_EMPTY_TEXT = "👨‍👩‍👧 <b>Список родителей</b>\n\nРодителей пока нет."
 ADMIN_LESSON_FORMATS_EMPTY_TEXT = "🏫 <b>Формат занятий</b>\n\nСейчас нет активных учеников, для которых можно переключить формат."
 ADMIN_SPEECH_STYLES_EMPTY_TEXT = "🗣 <b>Обращение с учениками</b>\n\nСейчас нет активных учеников, для которых можно переключить обращение."
 ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT = (
@@ -127,7 +105,7 @@ ADMIN_BROADCAST_EDIT_TEXT = (
     "✏️ Введите обновлённый текст сообщения.\n\n"
     "После этого снова покажу предпросмотр."
 )
-ADMIN_HEALTH_NO_ERRORS_TEXT = "✅ В последних runtime-логах ошибок не найдено."
+ADMIN_HEALTH_NO_ERRORS_TEXT = "✅ В последних журналах ошибок не найдено."
 
 LESSON_FORMAT_LABELS = {
     "online": "онлайн",
@@ -280,7 +258,7 @@ def reminder_status_label(reminders: str | None) -> str:
 def reminder_status_hint(reminders: str | None) -> str:
     reminders = reminders or "enabled"
     if reminders == "disabled":
-        return "Сейчас напоминания не приходят. Их можно включить в один клик."
+        return "Напоминания отключены."
     if reminders.startswith("paused_until:"):
         until = reminders.split(":", 1)[1]
         return f"Пауза действует до <b>{html.quote(until)}</b>. После этого напоминания снова включатся автоматически."
@@ -349,12 +327,8 @@ def build_student_home_text(
         lines.append(build_journey_progress_text(journey_progress))
         lines.append("")
 
-    if next_lesson and active_homework_count:
-        lines.append("Сначала стоит проверить расписание и домашние задания.")
-    elif next_lesson:
-        lines.append("Ниже собраны расписание, оплата, профиль и связь с преподавателем.")
-    else:
-        lines.append("Начните с расписания или напишите преподавателю, если нужен новый урок.")
+    if not next_lesson:
+        lines.append("Нет запланированных уроков.")
     return "\n".join(lines)
 
 
@@ -404,11 +378,7 @@ def build_schedule_text(lessons: list, lesson_format: str | None = None) -> str:
             f"\nФормат: <b>{lesson_format_label(next_lesson_format)}</b>"
         )
     title += f"\nВсего в расписании: <b>{len(lessons)}</b>"
-    if (next_lesson_format or "online") == "offline":
-        hint = "Адрес очного урока всегда можно открыть в разделе <b>Контакты</b>."
-    else:
-        hint = "Ссылки и способы подключения к онлайн-уроку собраны в разделе <b>Контакты</b>."
-    return title + "\n\n" + "\n".join(lines) + f"\n\n{hint}"
+    return title + "\n\n" + "\n".join(lines)
 
 
 def build_profile_text(
@@ -486,7 +456,7 @@ def build_payment_text(balance: int, payments: list) -> str:
 
     lines.extend([
         "",
-        "Ниже — последние оплаты и текущий остаток по каждой из них.",
+        "",
         "",
         "💳 <b>История оплат</b>",
     ])
@@ -705,7 +675,7 @@ def build_materials_text(
         lines.extend([
             "",
             f"{emoji} <b>{escape(r.get('label') or plabel)}</b> · {plabel}",
-            "Откройте по кнопке ниже — ссылка работает с телефона и компьютера.",
+            "",
         ])
         return "\n".join(lines)
 
@@ -812,10 +782,7 @@ GOAL_PROMPT_FSM_TEXT = (
     "Если передумаете — нажмите «Отмена»."
 )
 
-GOAL_SAVED_TEXT = (
-    "✅ <b>Цель сохранена.</b>\n\n"
-    "Я буду опираться на неё, когда мы будем составлять план и подбирать материалы."
-)
+GOAL_SAVED_TEXT = "✅ <b>Цель сохранена.</b>"
 
 GOAL_INVALID_TEXT = (
     "⚠️ Текст слишком короткий или слишком длинный (нужно от 5 до 500 символов)."
@@ -830,9 +797,8 @@ def build_goal_prompt_message(brand_tone: str | None = None) -> str:
         # neutral
         GOAL_PROMPT_TEXT,
         # warm
-        "🎯 <b>Расскажите про вашу цель</b>\n\n"
-        "Зачем вы учите язык? Это может быть путешествие, работа, фильмы в оригинале — "
-        "что угодно. Так я лучше пойму, что для вас важно, и подстрою план под это.",
+        "🎯 <b>Ваша цель</b>\n\n"
+        "Опишите коротко, чего хотите достичь.",
         # premium
         "🎯 <b>Ваша цель курса</b>\n\n"
         "Поделитесь личной целью — мы выстроим маршрут именно под неё.",
@@ -890,8 +856,8 @@ def build_weekly_checkin_message(brand_tone: str | None = None, *, has_goal: boo
         return choose_tone_variant(
             "🌱 <b>Еженедельная проверка</b>\n\n"
             "Сообщите, движемся ли мы в сторону вашей цели. Корректировки обсудим.",
-            "🌱 <b>Еженедельный check-in</b>\n\n"
-            "Прошла неделя занятий. Цель в фокусе? Открыты ли вопросы — напишите.",
+            "🌱 <b>Еженедельная проверка</b>\n\n"
+            "Прошла неделя занятий. Цель в фокусе? Если есть вопросы — напишите.",
             "🌱 <b>Прошла неделя</b>\n\n"
             "Как дела с целью? Если хочется что-то поменять — напишите. "
             "Если двигаемся в нужную сторону — продолжаем.",
@@ -995,6 +961,7 @@ def build_first_lesson_payment_invite_text(
     requisites: dict,
     pricing_context: dict | None = None,
     speech_style: str | None = None,
+    tariff_text: str | None = None,
 ) -> str:
     requisites_block = build_requisites_text(requisites or {}, pricing_context)
     intro = (
@@ -1002,6 +969,7 @@ def build_first_lesson_payment_invite_text(
         if student_name
         else "💛 <b>Спасибо за первый урок!</b>"
     )
+    tariff_line = f"\n💳 Тариф: {html.quote(tariff_text)}\n" if tariff_text else ""
     next_step = choose_form(
         speech_style,
         "Когда будет удобно, оплатите ближайшую неделю занятий — расписание и темп тогда сохранятся без пауз.",
@@ -1013,12 +981,35 @@ def build_first_lesson_payment_invite_text(
         "После перевода нажми <b>«Сообщить об оплате»</b>, и я её отмечу.",
     )
     return (
-        f"{intro}\n\n"
+        f"{intro}"
+        f"{tariff_line}\n"
         f"Ниже — реквизиты на случай, если ещё не оплачивали.\n\n"
         f"{requisites_block}\n\n"
         f"{next_step}\n"
         f"{confirm}"
     )
+
+
+def build_first_lesson_payment_invite_text_for_parent(
+    parent_name: str,
+    child_name: str,
+    requisites: dict,
+    pricing_context: dict | None = None,
+    tariff_text: str | None = None,
+) -> str:
+    requisites_block = build_requisites_text(requisites or {}, pricing_context)
+    greeting = (
+        f"💛 <b>Первый урок {html.quote(child_name)} завершён!</b>"
+        if child_name
+        else "💛 <b>Первый урок завершён!</b>"
+    )
+    tariff_line = f"\n💳 Тариф: {html.quote(tariff_text)}" if tariff_text else ""
+    return (
+        f"{greeting}\n"
+        f"{tariff_line}\n\n"
+        f"{requisites_block}\n\n"
+        f"Будем рады продолжить занятия. Реквизиты выше."
+    ).strip()
 
 
 def build_contacts_text(info: dict, show_address: bool = False) -> str:
@@ -1063,15 +1054,7 @@ def build_contacts_text(info: dict, show_address: bool = False) -> str:
 
 
 def build_more_screen_text(role: str) -> str:
-    if role == "parent":
-        return (
-            "👤 <b>Ещё</b>\n\n"
-            "Здесь — профиль родителя и опасные действия."
-        )
-    return (
-        "👤 <b>Ещё</b>\n\n"
-        "Здесь — профиль, уведомления, тест уровня, заморозка и опасные действия."
-    )
+    return "👤 <b>Ещё</b>"
 
 
 def build_help_text() -> str:
@@ -1111,9 +1094,8 @@ def build_brand_tone_text(current_tone: str | None) -> str:
     current_description = brand_tone_description(current_tone)
     return (
         "🎨 <b>Тональность бренда</b>\n\n"
-        f"Сейчас бот говорит в режиме: <b>{html.quote(current_label)}</b>.\n"
-        f"{html.quote(current_description)}\n\n"
-        "Ниже можно переключить общий стиль формулировок для автоматических сообщений, шаблонных рассылок и ключевых экранов."
+        f"Текущий режим: <b>{html.quote(current_label)}</b>\n"
+        f"{html.quote(current_description)}"
     )
 
 
@@ -1185,7 +1167,7 @@ def build_parent_child_hub_text(child: dict) -> str:
         f"📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>",
         f"🎓 Баланс уроков: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
         "",
-        "Выберите ниже, что хотите посмотреть подробнее.",
+        "",
     ])
     return "\n".join(lines)
 
@@ -1623,10 +1605,8 @@ def build_admin_dashboard_text(snapshot: dict, ops_status: dict, last_sync_label
         f"📚 Активных ДЗ: <b>{snapshot.get('active_homework', 0)}</b>",
         "",
         "⚙️ <b>Система</b>",
-        f"⏱ Scheduler: <b>{scheduler}</b>",
-        f"🗓 Последний sync: <b>{html.quote(last_sync_label)}</b>",
-        "",
-        "Выберите раздел ниже.",
+        f"⏱ Планировщик: <b>{scheduler}</b>",
+        f"🗓 Последняя синхронизация: <b>{html.quote(last_sync_label)}</b>",
     ]
     return "\n".join(lines)
 
@@ -1807,6 +1787,7 @@ def build_admin_student_card_text(
     balance: int,
     next_lesson: datetime | None,
     pair: dict | None = None,
+    tariff_text: str | None = None,
 ) -> str:
     reminders = reminder_status_label(student.get("lesson_reminders"))
     first_dt = student.get("cached_first_lesson_date") or student.get("first_lesson_date")
@@ -1826,6 +1807,7 @@ def build_admin_student_card_text(
         f"🎓 Баланс: <b>{lesson_balance_label(balance)}</b>",
         f"📅 Ближайший урок: <b>{html.quote(format_datetime(next_lesson) if next_lesson else 'не назначен')}</b>",
         f"⏱ Длительность урока: <b>{lesson_duration_label(student.get('lesson_duration_minutes'))}</b>",
+        f"💳 Тариф: <b>{html.quote(tariff_text) if tariff_text else '—'}</b>",
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
     ]
@@ -2334,7 +2316,7 @@ def _inbox_payload(event) -> dict:
 def build_admin_inbox_text(events: list) -> str:
     unread_count = sum(1 for e in events if not e.get("handled_at"))
     lines = [
-        "💬 <b>Inbox</b>",
+        "💬 <b>Входящие</b>",
         f"Непрочитанных: <b>{unread_count}</b>" if unread_count else "Нет непрочитанных.",
     ]
     if not events:
@@ -2411,24 +2393,18 @@ def build_admin_inbox_item_text(event) -> str:
     return "\n".join(lines)
 
 
-def build_parent_home_text_with_lights(parent_name: str, children: list[dict]) -> str:
-    lines = [
-        "👨‍👩‍👧 <b>Кабинет родителя</b>",
-        "",
-        f"<b>{html.quote(parent_name)}</b>",
-    ]
-    if not children:
-        lines.extend([
-            "",
-            "Пока в кабинете нет детей, привязанных к вашему профилю.",
-            "Если ребёнок уже занимается, но здесь пусто, напишите преподавателю.",
-        ])
-        return "\n".join(lines)
+# ── Homework nudge messages ─────────────────────────────────────────────────
 
-    lines.extend(["", "👶 Дети:"])
-    for child in children:
-        icon = child_traffic_light(child)
-        child_name = html.quote(child.get("child_label") or "—")
-        summary = child_problem_summary(child)
-        lines.append(f"{icon} <b>{child_name}</b> — {html.quote(summary)}")
-    return "\n".join(lines)
+def build_nudge_message(full_name: str, stage: int, hours_since: int) -> str:
+    """Build the text for a homework nudge at the given escalation stage.
+
+    Stage 1: gentle reminder.
+    Stage 2: warning.
+    Stage 3: urgent, 24h passed.
+    """
+    if stage == 1:
+        return f"📝 {full_name}: урок закончился {hours_since}ч назад, ДЗ не отправлено."
+    elif stage == 2:
+        return f"⚠️ {full_name} ждёт домашку. Уже {hours_since}ч без ДЗ."
+    else:
+        return f"🔴 {full_name}: сутки без ДЗ после урока."

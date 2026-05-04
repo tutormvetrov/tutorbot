@@ -91,6 +91,48 @@ async def command_today(message: Message, db: Database):
     )
 
 
+@router.message(Command("pulse"))
+async def command_pulse(message: Message, db: Database):
+    logger.info(f"Команда /pulse от {message.from_user.id}")
+    if message.from_user.id != config.ADMIN_ID:
+        text, keyboard = await get_user_home_payload(db, message.from_user.id)
+        await message.answer(text, reply_markup=keyboard)
+        return
+
+    from utils.pulse_engine import compute_all_health, build_pulse_text
+    from keyboards.inline import make_pulse_keyboard
+    from utils.observability import load_ops_status as _load_ops
+
+    # Handle /pulse off and /pulse on
+    raw_text = (message.text or "").strip()
+    parts = raw_text.split(maxsplit=1)
+    if len(parts) == 2:
+        arg = parts[1].lower()
+        if arg == "off":
+            ops = _load_ops()
+            ops["pulse_enabled"] = False
+            import json
+            from pathlib import Path
+            ops_path = Path(__file__).resolve().parents[2] / "data" / "ops_status.json"
+            ops_path.write_text(json.dumps(ops, ensure_ascii=False, indent=2), encoding="utf-8")
+            await message.answer("📊 Пульс отключён. Утренняя сводка не будет приходить.\nВключить: /pulse on")
+            return
+        elif arg == "on":
+            ops = _load_ops()
+            ops["pulse_enabled"] = True
+            import json
+            from pathlib import Path
+            ops_path = Path(__file__).resolve().parents[2] / "data" / "ops_status.json"
+            ops_path.write_text(json.dumps(ops, ensure_ascii=False, indent=2), encoding="utf-8")
+            await message.answer("📊 Пульс включён. Утренняя сводка будет приходить в 09:00.")
+            return
+
+    health_list = await compute_all_health(db)
+    text = build_pulse_text(health_list)
+    keyboard = make_pulse_keyboard(health_list)
+    await message.answer(text, reply_markup=keyboard)
+
+
 @router.message(Command("freeze"))
 async def command_freeze(message: Message, db: Database):
     logger.info(f"Команда /freeze от {message.from_user.id}")

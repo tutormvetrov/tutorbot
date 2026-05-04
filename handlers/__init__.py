@@ -1,12 +1,13 @@
 from loader import dp
 from handlers.users import start, menu, callbacks, admin, journey
-from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, inbox, notes, parents, payments, resources, students, study_plans, today
+from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, inbox, notes, parents, payments, pulse, resources, students, study_plans, today
 
 # Порядок важен: admin регистрируется первым, чтобы его специфичные
 # фильтры (StateFilter + FSM) имели приоритет над общими.
 # today регистрируется раньше admin, чтобы специфичные admin:cat:education:*
 # маршруты не перехватывались широким фильтром admin:cat:*.
 dp.include_router(today.router)
+dp.include_router(pulse.router)
 dp.include_router(admin.router)
 dp.include_router(inbox.router)
 dp.include_router(resources.router)

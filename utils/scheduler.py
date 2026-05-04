@@ -22,13 +22,23 @@ from utils.homework_delivery import (
     send_single_homework_notification,
 )
 from utils.homework_text import homework_body_html
-from utils.observability import update_job_status, update_ops_status, write_runtime_event
+from utils.nudge_engine import check_and_send_nudges
+from utils.touch_engine import (
+    compute_touch_send_time,
+    is_in_send_window,
+    parse_teacher_comment,
+    render_touch_message,
+    select_touch_type,
+    should_send_touch,
+)
+from utils.observability import load_ops_status, update_job_status, update_ops_status, write_runtime_event
 from utils.reschedule import encode_reschedule_slot, find_next_free_reschedule_slots, format_reschedule_slot_label
 from utils.speech import choose_form
 from utils.time import business_naive_now, business_today
 from utils.ui_text import (
     build_feedback_after_first_message,
     build_first_lesson_payment_invite_text,
+    build_first_lesson_payment_invite_text_for_parent,
     build_goal_prompt_message,
     build_materials_intro_message,
     build_pair_weekly_report_text,
@@ -411,15 +421,28 @@ async def first_lesson_payment_invite_job(bot, db: "Database"):
     for student in students:
         try:
             pricing_context = await db.get_student_pricing_context(student["telegram_id"])
-            text = build_first_lesson_payment_invite_text(
-                student.get("full_name") or "",
-                requisites,
-                pricing_context=pricing_context,
-                speech_style=student.get("speech_style"),
-            )
+            parent = await db.get_active_parent_for_student(student["telegram_id"])
+            if parent:
+                text = build_first_lesson_payment_invite_text_for_parent(
+                    parent.get("full_name") or "",
+                    student.get("full_name") or "",
+                    requisites,
+                    pricing_context=pricing_context,
+                    tariff_text=student.get("tariff_text"),
+                )
+                target_id = parent["telegram_id"]
+            else:
+                text = build_first_lesson_payment_invite_text(
+                    student.get("full_name") or "",
+                    requisites,
+                    pricing_context=pricing_context,
+                    speech_style=student.get("speech_style"),
+                    tariff_text=student.get("tariff_text"),
+                )
+                target_id = student["telegram_id"]
             await asyncio.wait_for(
                 bot.send_message(
-                    student["telegram_id"],
+                    target_id,
                     text,
                     reply_markup=make_first_lesson_invite_keyboard(),
                 ),
@@ -427,11 +450,20 @@ async def first_lesson_payment_invite_job(bot, db: "Database"):
             )
             await db.mark_first_lesson_invite_sent(student["telegram_id"])
             sent_count += 1
-            logger.info(
-                "Отправлено приглашение к оплате после первого урока ученику %s (%s)",
-                student.get("full_name"),
-                student["telegram_id"],
-            )
+            if parent:
+                logger.info(
+                    "Отправлено приглашение к оплате после первого урока родителю %s (%s) за ученика %s (%s)",
+                    parent.get("full_name"),
+                    parent["telegram_id"],
+                    student.get("full_name"),
+                    student["telegram_id"],
+                )
+            else:
+                logger.info(
+                    "Отправлено приглашение к оплате после первого урока ученику %s (%s)",
+                    student.get("full_name"),
+                    student["telegram_id"],
+                )
         except Exception as exc:
             logger.warning(
                 "Ошибка приглашения к оплате после первого урока для %s: %s",
@@ -563,8 +595,8 @@ async def user_journey_dispatch_job(bot, db: "Database"):
                                 "context": "onboarding",
                                 "message_preview": "Прошёл все шаги онбординга.",
                             })
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning("inbox event onboarding_completed failed for %s: %s", user_id, exc)
         except Exception as exc:
             logger.warning(
                 "user_journey_dispatch_job: failed to send %s to %s: %s",
@@ -796,6 +828,160 @@ async def study_plan_weekly_digest_job(bot, db: "Database"):
     )
 
 
+async def morning_briefing_job(bot, db: "Database"):
+    """Утренняя сводка в 09:00: уроки на день + проблемы."""
+    from keyboards.inline import make_briefing_keyboard
+    from utils.pulse_engine import (
+        build_briefing_text,
+        compute_all_health,
+        get_most_urgent_student_id,
+        should_send_briefing,
+    )
+
+    # Check if pulse is enabled
+    ops = load_ops_status()
+    if not ops.get("pulse_enabled", True):
+        update_job_status("morning_briefing", "ok", skipped_disabled=True)
+        write_runtime_event("morning_briefing", "ok", skipped_disabled=True)
+        return
+
+    if not config.ADMIN_ID:
+        return
+
+    now = business_naive_now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+
+    health_list = await compute_all_health(db, now=now)
+    today_lessons = await db.get_today_lessons_for_briefing(today_start, tomorrow_start)
+
+    if not should_send_briefing(health_list, today_lessons or []):
+        update_job_status("morning_briefing", "ok", skipped_no_content=True)
+        write_runtime_event("morning_briefing", "ok", skipped_no_content=True)
+        return
+
+    text = build_briefing_text(health_list, today_lessons or [], today_date=now.date())
+    most_urgent = get_most_urgent_student_id(health_list)
+    keyboard = make_briefing_keyboard(most_urgent)
+
+    try:
+        await bot.send_message(config.ADMIN_ID, text, reply_markup=keyboard)
+    except Exception as exc:
+        logger.warning("Не удалось отправить утреннюю сводку: %s", exc)
+
+    update_job_status("morning_briefing", "ok", sent=1, problems=sum(1 for h in health_list if h["color"] != "green"))
+    write_runtime_event("morning_briefing", "ok", sent=1)
+
+
+async def homework_nudge_job(bot, db: "Database"):
+    """ДЗ-надзиратель: 3-ступенчатая эскалация при невыдаче ДЗ после урока."""
+    await check_and_send_nudges(bot, db)
+
+
+async def between_lesson_touches_job(bot, db: "Database"):
+    """Межурочные касания: персонализированные сообщения ученикам между уроками."""
+    from utils.brand import get_brand_tone
+    from utils.pulse_engine import is_quiet_hours
+
+    now = datetime.now()
+    today = now.date()
+
+    if is_quiet_hours(now, for_student=True):
+        update_job_status("between_lesson_touches", "ok", skipped_quiet=True, sent=0)
+        write_runtime_event("between_lesson_touches", "ok", skipped_quiet=True, sent=0)
+        return
+
+    candidates = await db.get_touch_candidates()
+    sent_count = 0
+    checked = len(candidates) if candidates else 0
+
+    brand_tone = get_brand_tone()
+
+    for student in (candidates or []):
+        student_id = student["telegram_id"]
+        full_name = student.get("full_name") or "---"
+        speech_style = student.get("speech_style")
+        last_lesson = student.get("last_lesson_date")
+        next_lesson = student.get("next_lesson_date")
+        teacher_comment = student.get("teacher_comment")
+        has_active_hw = bool(student.get("has_active_hw"))
+        is_pair = bool(student.get("is_pair"))
+        partner_name = student.get("partner_name")
+        goal_text = student.get("goal_text")
+
+        # Rate limiting: touches this week
+        week_ago = now - timedelta(days=7)
+        recent = await db.get_recent_touches(student_id, since=week_ago)
+        touches_this_week = len(recent) if recent else 0
+
+        # Check if we should send a touch
+        balance_row = await db.get_student_lesson_balance(student_id)
+        balance = int(balance_row) if balance_row else 0
+
+        if not should_send_touch(last_lesson, next_lesson, touches_this_week, today, balance):
+            continue
+
+        # Check send window (midpoint between lessons +/- 1 hour)
+        if last_lesson and next_lesson:
+            send_time = compute_touch_send_time(last_lesson, next_lesson)
+            if not is_in_send_window(send_time, now, window_hours=1.0):
+                continue
+
+        # Parse teacher comment and select touch type
+        comment_data = parse_teacher_comment(teacher_comment)
+
+        # Compute streak for motivation
+        from utils.pulse_engine import compute_student_health
+        health_data = await db.get_all_pulse_data()
+        streak_weeks = 0
+        for row in (health_data or []):
+            if row.get("telegram_id") == student_id:
+                h = compute_student_health(row, now=now)
+                streak_weeks = h.get("streak_weeks", 0)
+                break
+
+        touch_type = select_touch_type(comment_data, has_active_hw, streak_weeks, balance)
+        if not touch_type:
+            continue
+
+        # Render message
+        context = {
+            "topic": comment_data.get("topic") or comment_data.get("difficulty"),
+            "difficulty": comment_data.get("difficulty"),
+            "raw_first_sentence": comment_data.get("raw_first_sentence"),
+            "N": streak_weeks,
+        }
+
+        message = render_touch_message(
+            template_type=touch_type,
+            student_name=full_name.split()[0] if full_name != "---" else full_name,
+            context=context,
+            brand_tone=brand_tone,
+            speech_style=speech_style,
+            is_pair=is_pair,
+            partner_name=partner_name,
+        )
+        if not message:
+            continue
+
+        # Send
+        try:
+            await bot.send_message(student_id, message)
+            await db.log_touch(
+                student_id=student_id,
+                template_type=touch_type,
+                template_key=None,
+                context_source="teacher_comment" if teacher_comment else ("homework" if has_active_hw else "goal"),
+                context_snippet=(teacher_comment or "")[:100] if teacher_comment else None,
+            )
+            sent_count += 1
+        except Exception as exc:
+            logger.warning("Не удалось отправить касание для %s: %s", full_name, exc)
+
+    update_job_status("between_lesson_touches", "ok", checked=checked, sent=sent_count)
+    write_runtime_event("between_lesson_touches", "ok", checked=checked, sent=sent_count)
+
+
 def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=config.TUTORBOT_TIMEZONE)
     scheduler.add_job(
@@ -909,5 +1095,26 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db],
         id="pair_weekly_report",
         name="Еженедельный обзор для пар",
+    )
+    scheduler.add_job(
+        morning_briefing_job,
+        CronTrigger(hour=9, minute=0),
+        args=[bot, db],
+        id="morning_briefing",
+        name="Утренняя сводка: уроки и проблемы",
+    )
+    scheduler.add_job(
+        homework_nudge_job,
+        CronTrigger(minute="0,30"),
+        args=[bot, db],
+        id="homework_nudge",
+        name="ДЗ-надзиратель: напоминание об отправке ДЗ",
+    )
+    scheduler.add_job(
+        between_lesson_touches_job,
+        CronTrigger(minute=0),
+        args=[bot, db],
+        id="between_lesson_touches",
+        name="Межурочные касания",
     )
     return scheduler

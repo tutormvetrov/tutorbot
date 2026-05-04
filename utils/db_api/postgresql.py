@@ -9,6 +9,7 @@ from utils.db_api.homework import DatabaseHomeworkMixin
 from utils.db_api.journey import DatabaseJourneyMixin
 from utils.db_api.lessons import DatabaseLessonMixin
 from utils.db_api.payments import DatabasePaymentMixin
+from utils.db_api.pulse import DatabasePulseMixin
 from utils.db_api.schema import DatabaseSchemaMixin
 from utils.db_api.student_resources import DatabaseStudentResourcesMixin
 from utils.db_api.study_plans import DatabaseStudyPlanMixin
@@ -27,6 +28,7 @@ class Database(
     DatabaseAdminTodayMixin,
     DatabaseStudentResourcesMixin,
     DatabaseJourneyMixin,
+    DatabasePulseMixin,
 ):
     def __init__(self):
         self.pool: Pool | None = None

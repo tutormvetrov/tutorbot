@@ -264,7 +264,7 @@ def make_lesson_followup_keyboard(lesson_id: int, student_id: int) -> InlineKeyb
 # ─── Admin ────────────────────────────────────────────────────────────────────
 
 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("🎯 Сегодня", "admin:today")],
+    [_btn("🎯 Сегодня", "admin:today"), _btn("📊 Пульс", "admin:pulse")],
     [_btn("👥 Ученики", "admin:cat:students"), _btn("📚 Учебный процесс", "admin:cat:education")],
     [_btn("💬 Входящие", "admin:inbox"), _btn("📢 Рассылка", "admin:broadcast")],
     [_btn("⚙️ Сервис", "admin:cat:service")],
@@ -1337,4 +1337,42 @@ def make_admin_resource_primary_choice_keyboard(
         [_btn("⭐ Сделать основной", yes_callback)],
         [_btn("➡️ Не сейчас", no_callback)],
     ])
+
+
+# ─── Homework nudge ─────────────────────────────────────────────────────────
+
+def make_nudge_keyboard(student_id: int, nudge_id: int, stage: int) -> InlineKeyboardMarkup:
+    """Inline keyboard for homework nudge messages (3-stage escalation)."""
+    rows = [[_btn("📝 Отправить ДЗ", f"nudge:hw:{student_id}")]]
+    if stage >= 2:
+        rows.append([_btn("⏭ Пропустить", f"nudge:skip:{nudge_id}")])
+    if stage >= 3:
+        rows.append([_btn("💤 Урок был без ДЗ", f"nudge:nohw:{nudge_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─── Pulse dashboard ───────────────────────────────────────────────────────
+
+_PULSE_COLOR_EMOJI = {"red": "\U0001f534", "yellow": "\U0001f7e1", "green": "\U0001f7e2"}
+
+
+def make_pulse_keyboard(health_list: list[dict]) -> InlineKeyboardMarkup:
+    """Inline keyboard for the Pulse dashboard: each student is a clickable button."""
+    rows = []
+    for h in health_list:
+        emoji = _PULSE_COLOR_EMOJI.get(h.get("color", "green"), "⬜")
+        name = h.get("pair_title") if h.get("is_pair") else h.get("full_name", "---")
+        tid = h.get("telegram_id")
+        if tid:
+            rows.append([_btn(f"{emoji} {name}", f"pulse:student:{tid}")])
+    rows.append([_btn("◀️ К панели", "admin:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_briefing_keyboard(most_urgent_student_id: int | None = None) -> InlineKeyboardMarkup:
+    """Inline keyboard for the morning briefing message."""
+    rows = [[_btn("📊 Пульс", "briefing:pulse")]]
+    if most_urgent_student_id:
+        rows.append([_btn("📝 Отправить ДЗ", f"briefing:hw:{most_urgent_student_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 

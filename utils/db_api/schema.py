@@ -120,6 +120,20 @@ class DatabaseSchemaMixin:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lessons_student_id
+            ON lessons (student_id);
+            """,
+            execute=True,
+        )
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lessons_lesson_date
+            ON lessons (lesson_date);
+            """,
+            execute=True,
+        )
 
     async def create_table_homework(self):
         await self.execute("""
@@ -139,6 +153,13 @@ class DatabaseSchemaMixin:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_homework_student_id
+            ON homework (student_id);
+            """,
+            execute=True,
+        )
 
     async def create_table_homework_delivery_queue(self):
         await self.execute("""
@@ -204,6 +225,13 @@ class DatabaseSchemaMixin:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_payments_student_id
+            ON payments (student_id);
+            """,
+            execute=True,
+        )
 
     async def create_table_learning_plans(self):
         await self.execute("""
@@ -759,7 +787,7 @@ class DatabaseSchemaMixin:
         await self.execute("""
             CREATE TABLE IF NOT EXISTS user_journey_events (
                 id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                 kind TEXT NOT NULL,
                 scheduled_at TIMESTAMP NOT NULL,
                 sent_at TIMESTAMP,
@@ -784,6 +812,34 @@ class DatabaseSchemaMixin:
             """,
             execute=True,
         )
+
+    async def migrate_user_journey_events_add_fk(self):
+        try:
+            fk_exists = await self.execute(
+                """
+                SELECT 1
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON kcu.constraint_name = tc.constraint_name
+                 AND kcu.table_name = tc.table_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND tc.table_name = 'user_journey_events'
+                  AND kcu.column_name = 'user_id'
+                """,
+                fetchval=True,
+            )
+            if not fk_exists:
+                await self.execute(
+                    """
+                    ALTER TABLE user_journey_events
+                    ADD CONSTRAINT user_journey_events_user_id_fkey
+                    FOREIGN KEY (user_id) REFERENCES users(telegram_id) ON DELETE CASCADE;
+                    """,
+                    execute=True,
+                )
+        except Exception as exc:
+            self._log_migration_failure("migrate_user_journey_events_add_fk", exc)
+            return
 
     async def migrate_user_journey_events(self):
         try:
@@ -967,6 +1023,80 @@ class DatabaseSchemaMixin:
         except Exception as exc:
             self._log_migration_failure("migrate_student_stage", exc)
 
+    async def migrate_users_add_tariff_text(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS tariff_text TEXT",
+                execute=True,
+            )
+        except Exception:
+            pass
+
+    # ── Teacher Pulse migrations ─────────────────────────────────────────────
+
+    async def create_table_homework_nudges(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS homework_nudges (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+                stage INTEGER NOT NULL DEFAULT 1,
+                sent_at TIMESTAMP NOT NULL DEFAULT now(),
+                resolved_at TIMESTAMP,
+                resolution TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS homework_nudges_open_idx
+            ON homework_nudges (student_id)
+            WHERE resolved_at IS NULL;
+            """,
+            execute=True,
+        )
+
+    async def migrate_homework_nudges(self):
+        try:
+            await self.create_table_homework_nudges()
+        except Exception as exc:
+            self._log_migration_failure("migrate_homework_nudges", exc)
+
+    async def create_table_student_touches(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_touches (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                template_type TEXT NOT NULL,
+                template_key TEXT,
+                context_source TEXT NOT NULL,
+                context_snippet TEXT,
+                sent_at TIMESTAMP NOT NULL DEFAULT now()
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_touches_student_sent_idx
+            ON student_touches (student_id, sent_at DESC);
+            """,
+            execute=True,
+        )
+
+    async def migrate_student_touches(self):
+        try:
+            await self.create_table_student_touches()
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_touches", exc)
+
+    async def migrate_users_add_touches_enabled(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS touches_enabled BOOLEAN DEFAULT true",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_touches_enabled", exc)
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -991,6 +1121,7 @@ class DatabaseSchemaMixin:
                 "cached_first_lesson_date",
                 "lessons_completed_count",
                 "student_stage_override",
+                "touches_enabled",
             },
             "lessons": {
                 "lesson_date",
@@ -1133,6 +1264,25 @@ class DatabaseSchemaMixin:
                 "payload",
                 "created_at",
             },
+            "homework_nudges": {
+                "id",
+                "student_id",
+                "lesson_id",
+                "stage",
+                "sent_at",
+                "resolved_at",
+                "resolution",
+                "created_at",
+            },
+            "student_touches": {
+                "id",
+                "student_id",
+                "template_type",
+                "template_key",
+                "context_source",
+                "context_snippet",
+                "sent_at",
+            },
         }
 
         rows = await self.execute(
@@ -1197,6 +1347,11 @@ class DatabaseSchemaMixin:
         await self.migrate_student_resources()
         await self.migrate_users_add_onboarding()
         await self.migrate_user_journey_events()
+        await self.migrate_user_journey_events_add_fk()
         await self.migrate_pair_shared_goal()
         await self.migrate_student_stage()
+        await self.migrate_users_add_tariff_text()
+        await self.migrate_homework_nudges()
+        await self.migrate_student_touches()
+        await self.migrate_users_add_touches_enabled()
         await self.verify_required_schema()

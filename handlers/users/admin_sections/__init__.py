@@ -1,4 +1,4 @@
-from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, inbox, notes, parents, payments, students, study_plans, today
+from handlers.users.admin_sections import broadcast, calendar_aliases, health, homework, inbox, notes, parents, payments, pulse, resources, students, study_plans, today
 
 __all__ = [
     "broadcast",
@@ -9,6 +9,8 @@ __all__ = [
     "notes",
     "parents",
     "payments",
+    "pulse",
+    "resources",
     "students",
     "study_plans",
     "today",
