@@ -112,13 +112,14 @@ def select_touch_type(
     has_active_hw: bool,
     streak_weeks: int,
     balance: int,
+    homework_exempt: bool = False,
 ) -> str | None:
     """Decide which type of touch to send, or None if no touch should be sent.
 
     Decision tree:
     1. Has topic from teacher_comment -> "progress"
     2. Has difficulty from teacher_comment -> "support"
-    3. No comment data but active HW -> "hw_nudge"
+    3. No comment data but active HW -> "hw_nudge" (skipped if homework_exempt)
     4. streak >= 3 weeks -> "motivation"
     5. Otherwise -> None (don't send)
 
@@ -134,7 +135,7 @@ def select_touch_type(
         return "support"
     if comment_data.get("topic"):
         return "progress"
-    if has_active_hw:
+    if has_active_hw and not homework_exempt:
         return "hw_nudge"
     if streak_weeks >= 3:
         return "motivation"

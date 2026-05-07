@@ -905,6 +905,7 @@ async def between_lesson_touches_job(bot, db: "Database"):
         next_lesson = student.get("next_lesson_date")
         teacher_comment = student.get("teacher_comment")
         has_active_hw = bool(student.get("has_active_hw"))
+        homework_exempt = bool(student.get("homework_exempt"))
         is_pair = bool(student.get("is_pair"))
         partner_name = student.get("partner_name")
         goal_text = student.get("goal_text")
@@ -940,7 +941,13 @@ async def between_lesson_touches_job(bot, db: "Database"):
                 streak_weeks = h.get("streak_weeks", 0)
                 break
 
-        touch_type = select_touch_type(comment_data, has_active_hw, streak_weeks, balance)
+        touch_type = select_touch_type(
+            comment_data,
+            has_active_hw,
+            streak_weeks,
+            balance,
+            homework_exempt=homework_exempt,
+        )
         if not touch_type:
             continue
 

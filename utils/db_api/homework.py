@@ -68,7 +68,11 @@ class DatabaseHomeworkMixin:
                 attachment_file_id = $5,
                 attachment_file_unique_id = $6,
                 attachment_name = $7,
-                attachment_mime_type = $8
+                attachment_mime_type = $8,
+                reminder_sent = CASE
+                    WHEN deadline IS DISTINCT FROM $4 THEN false
+                    ELSE reminder_sent
+                END
             WHERE id = $1
             """,
             homework_id,
@@ -257,17 +261,40 @@ class DatabaseHomeworkMixin:
         )
 
     async def delete_homework(self, hw_id: int):
+        row = await self.execute(
+            "SELECT student_id FROM homework WHERE id=$1",
+            hw_id,
+            fetchrow=True,
+        )
         await self.execute(
             "DELETE FROM homework WHERE id=$1",
             hw_id,
             execute=True,
         )
+        if row and row.get("student_id") is not None:
+            await self.execute(
+                """
+                UPDATE lessons
+                SET homework_check_reminder_sent = false
+                WHERE student_id = $1
+                  AND lesson_date > NOW()
+                """,
+                row["student_id"],
+                execute=True,
+            )
 
     async def mark_homework_done(self, hw_id: int, student_id: int):
         await self.execute(
-            "UPDATE homework SET status='done' WHERE id=$1 AND student_id=$2 AND status='active'",
+            "UPDATE homework SET status='done', completed_at = NOW() WHERE id=$1 AND student_id=$2 AND status='active'",
             hw_id,
             student_id,
+            execute=True,
+        )
+
+    async def unmark_homework_done(self, hw_id: int):
+        await self.execute(
+            "UPDATE homework SET status='active', completed_at = NULL WHERE id=$1 AND status='done'",
+            hw_id,
             execute=True,
         )
 
@@ -281,6 +308,7 @@ class DatabaseHomeworkMixin:
               AND h.reminder_sent = false
               AND h.deadline >= NOW() + INTERVAL '20 hours'
               AND h.deadline <= NOW() + INTERVAL '28 hours'
+              AND COALESCE(u.homework_exempt, false) = false
             """,
             fetch=True,
         )

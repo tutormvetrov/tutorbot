@@ -415,6 +415,8 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         f"👤 {safe_full_name}  •  🎂 {data.get('age')} лет\n"
         f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
         f"{contacts_text}\n\n"
+        "📥 Полная инструкция к боту лежит в «👤 Ещё → 📥 Инструкция к боту». "
+        "Можно скачать DOCX и читать офлайн.\n\n"
         "Если готовы, ниже есть тест уровня.",
         reply_markup=make_post_registration_keyboard(
             booking_url,
@@ -611,7 +613,8 @@ async def _finish_parent_registration(
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 Вы: {html.quote(full_name)}\n"
         f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет.\n\n"
-        f"{'✅ Связь с учеником найдена.' if linked_student else '⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика.'}",
+        f"{'✅ Связь с учеником найдена.' if linked_student else '⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика.'}\n\n"
+        "📥 Памятка для родителя — «👤 Ещё → 📥 Инструкция к боту».",
         reply_markup=parent_main_keyboard,
     )
 

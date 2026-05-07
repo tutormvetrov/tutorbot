@@ -1148,6 +1148,14 @@ class DatabaseUserMixin:
             execute=True,
         )
 
+    async def set_homework_exempt(self, telegram_id: int, value: bool):
+        await self.execute(
+            "UPDATE users SET homework_exempt = $1 WHERE telegram_id = $2",
+            bool(value),
+            telegram_id,
+            execute=True,
+        )
+
     async def save_student_bookmark(
         self,
         telegram_id: int,

@@ -87,15 +87,35 @@ student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🔔 Управление уведомлениями", "notif:manage")],
     [_btn("🧪 Тест уровня", "level_test:now")],
     [_btn("❄️ Заморозка", "freeze")],
+    [_btn("📥 Инструкция к боту", "guide:menu:student")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
 
 parent_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👤 Профиль родителя", "profile")],
+    [_btn("📥 Инструкция к боту", "guide:send:parent")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
+
+
+def make_student_guide_picker_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("🎓 Взрослая версия", "guide:send:student_adult")],
+        [_btn("🎒 Школьная версия", "guide:send:student_school")],
+        [_btn("◀️ Назад", "more")],
+    ])
+
+
+def make_admin_guides_picker_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("🎓 Взрослый ученик", "guide:send:student_adult")],
+        [_btn("🎒 Школьник", "guide:send:student_school")],
+        [_btn("👨‍👩‍👧 Родитель", "guide:send:parent")],
+        [_btn("👩‍🏫 Преподаватель", "guide:send:admin")],
+        [_btn("◀️ К сервису", "admin:cat:service")],
+    ])
 
 # Backward compatibility for code paths/tests that still import main_keyboard.
 main_keyboard = student_main_keyboard
@@ -300,6 +320,7 @@ admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🎨 Тональность бренда", "admin:brand_tone")],
     [_btn("📝 Рабочие заметки", "admin:notes")],
     [_btn("🌍 Глобальные учебные ссылки", "admin:resources:global")],
+    [_btn("📥 Инструкции по ролям", "admin:guides")],
     [_btn("🧪 Просмотр ролей", "admin:preview")],
     [_btn("🔄 Перезапуск бота", "admin:restart")],
     [_btn("◀️ К панели", "back_to_admin")],
@@ -519,7 +540,8 @@ def make_admin_students_list_keyboard(
 
     for offset, student in enumerate(page_items, start=1):
         index = start + offset
-        label = f"{index}. {student['full_name']}"
+        prefix = "🚫 " if student.get("homework_exempt") else ""
+        label = f"{index}. {prefix}{student['full_name']}"
         if len(label) > 60:
             label = label[:58] + "…"
         rows.append([
@@ -546,16 +568,24 @@ def make_admin_student_card_keyboard(
     lesson_format: str = "online",
     speech_style: str = "formal",
     lesson_duration_minutes: int = 90,
+    homework_exempt: bool = False,
 ) -> InlineKeyboardMarkup:
-    return make_admin_student_overview_keyboard(telegram_id, page)
+    return make_admin_student_overview_keyboard(telegram_id, page, homework_exempt=homework_exempt)
 
 
-def make_admin_student_overview_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
+def make_admin_student_overview_keyboard(
+    telegram_id: int,
+    page: int,
+    homework_exempt: bool = False,
+) -> InlineKeyboardMarkup:
+    hw_label = "🚫 ДЗ-режим: не задаю · вернуть" if homework_exempt else "📚 ДЗ-режим: задаю · отключить"
+    hw_target = "0" if homework_exempt else "1"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             _btn("⚡ Действия", f"admin:student_actions:{telegram_id}:{page}"),
             _btn("⚙️ Настройки", f"admin:student_settings:{telegram_id}:{page}"),
         ],
+        [_btn(hw_label, f"admin:student_homework_exempt_card:{telegram_id}:{page}:{hw_target}")],
         [_btn("🛡 Опасные действия", f"admin:student_danger:{telegram_id}:{page}")],
         [_btn("◀️ К списку учеников", f"admin:students:page:{page}")],
         [_btn("◀️ К панели", "back_to_admin")],
@@ -585,11 +615,14 @@ def make_admin_student_settings_keyboard(
     lesson_format: str = "online",
     speech_style: str = "formal",
     lesson_duration_minutes: int = 90,
+    homework_exempt: bool = False,
 ) -> InlineKeyboardMarkup:
     is_offline = lesson_format == "offline"
     format_label = "🏠 Формат: очно" if is_offline else "💻 Формат: онлайн"
     toggle_to = "online" if is_offline else "offline"
     toggle_label = "Переключить на онлайн" if is_offline else "Переключить на очно"
+    hw_exempt_label = "🚫 ДЗ: не задаю" if homework_exempt else "📚 ДЗ: задаю"
+    hw_exempt_target = "0" if homework_exempt else "1"
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn("💳 Тариф", f"admin:student_tariff:{telegram_id}:{page}")],
         [_btn(f"⏱ Длительность урока: {lesson_duration_minutes} мин", f"admin:student_duration:{telegram_id}:{page}")],
@@ -599,7 +632,15 @@ def make_admin_student_settings_keyboard(
             f"admin:student_speech_style:{telegram_id}:{page}:{'informal' if speech_style == 'formal' else 'formal'}",
         )],
         [_btn("📊 Стадия ученика", f"admin:student_stage:{telegram_id}:{page}")],
+        [_btn(hw_exempt_label, f"admin:student_homework_exempt:{telegram_id}:{page}:{hw_exempt_target}")],
         [_btn("◀️ К карточке ученика", f"admin:student_card:{telegram_id}:{page}")],
+    ])
+
+
+def make_admin_homework_done_notification_keyboard(hw_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📂 Открыть карточку", f"admin:homework_manage:{hw_id}")],
+        [_btn("↩️ Вернуть в активные", f"hw_unmark_done:{hw_id}")],
     ])
 
 

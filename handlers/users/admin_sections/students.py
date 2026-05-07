@@ -255,7 +255,11 @@ async def _render_admin_student_card(message: types.Message, db: Database, stude
 
     await message.edit_text(
         build_admin_student_card_text(student, balance, next_lesson, pair=pair),
-        reply_markup=make_admin_student_card_keyboard(student_id, page),
+        reply_markup=make_admin_student_card_keyboard(
+            student_id,
+            page,
+            homework_exempt=bool(student.get("homework_exempt")),
+        ),
     )
 
 
@@ -291,6 +295,7 @@ async def _render_admin_student_settings(message: types.Message, db: Database, s
             lesson_format=student.get("lesson_format") or "online",
             speech_style=student.get("speech_style") or "formal",
             lesson_duration_minutes=int(student.get("lesson_duration_minutes") or 90),
+            homework_exempt=bool(student.get("homework_exempt")),
         ),
     )
 
@@ -1153,6 +1158,42 @@ async def admin_student_speech_style_toggle(callback_query: types.CallbackQuery,
     await db.set_speech_style(student_id, target_style)
     await _render_admin_student_settings(callback_query.message, db, student_id, page)
     await callback_query.answer(f"Обращение переключено: {speech_style_label(target_style)}")
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_homework_exempt:"))
+async def admin_student_homework_exempt_toggle(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    if len(parts) != 5 or parts[4] not in {"0", "1"}:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    student_id = int(parts[2])
+    page = int(parts[3])
+    target_value = parts[4] == "1"
+    await db.set_homework_exempt(student_id, target_value)
+    await _render_admin_student_settings(callback_query.message, db, student_id, page)
+    answer = "Не задаю ДЗ этому ученику." if target_value else "Снова задаю ДЗ этому ученику."
+    await callback_query.answer(answer)
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:student_homework_exempt_card:"))
+async def admin_student_homework_exempt_card_toggle(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    if len(parts) != 5 or parts[4] not in {"0", "1"}:
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    student_id = int(parts[2])
+    page = int(parts[3])
+    target_value = parts[4] == "1"
+    await db.set_homework_exempt(student_id, target_value)
+    await _render_admin_student_card(callback_query.message, db, student_id, page)
+    answer = "Не задаю ДЗ этому ученику." if target_value else "Снова задаю ДЗ этому ученику."
+    await callback_query.answer(answer)
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:student_stage:"))
