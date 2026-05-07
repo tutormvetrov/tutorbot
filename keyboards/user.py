@@ -104,6 +104,7 @@ student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🔔 Управление уведомлениями", "notif:manage")],
     [_btn("🧪 Тест уровня", "level_test:now")],
     [_btn("❄️ Заморозка", "freeze")],
+    [_btn("📥 Инструкция к боту", "guide:menu:student")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
@@ -111,9 +112,18 @@ student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 parent_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👤 Профиль родителя", "profile")],
     [_btn("🔔 Управление уведомлениями", "notif:manage")],
+    [_btn("📥 Инструкция к боту", "guide:send:parent")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],
 ])
+
+
+def make_student_guide_picker_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("🎓 Взрослая версия", "guide:send:student_adult")],
+        [_btn("🎒 Школьная версия", "guide:send:student_school")],
+        [_btn("◀️ Назад", "more")],
+    ])
 
 # Backward compatibility for code paths/tests that still import main_keyboard.
 main_keyboard = student_main_keyboard

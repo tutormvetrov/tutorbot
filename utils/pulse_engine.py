@@ -74,6 +74,7 @@ def compute_student_health(row: dict, now: datetime | None = None) -> dict:
 
     balance = int(row.get("balance") or 0)
     open_nudges = int(row.get("open_nudge_count") or 0)
+    homework_exempt = bool(row.get("homework_exempt") or False)
 
     last_lesson_date = row.get("last_lesson_date")
     last_hw_date = row.get("last_hw_created_at")
@@ -111,7 +112,11 @@ def compute_student_health(row: dict, now: datetime | None = None) -> dict:
             reasons.append("payment_not_logged")
         else:
             reasons.append("balance_0")
-    if hours_since_last_lesson is not None and hours_since_last_lesson > _RED_NO_HW_HOURS:
+    if (
+        not homework_exempt
+        and hours_since_last_lesson is not None
+        and hours_since_last_lesson > _RED_NO_HW_HOURS
+    ):
         if last_hw_date is None or (last_lesson_date and last_hw_date < last_lesson_date):
             reasons.append("no_hw_24h")
     if days_since_last_lesson is not None and days_since_last_lesson > _RED_NO_LESSON_DAYS:
@@ -124,7 +129,11 @@ def compute_student_health(row: dict, now: datetime | None = None) -> dict:
     if not is_red:
         if balance == _YELLOW_BALANCE:
             reasons.append("balance_1")
-        if hours_since_last_lesson is not None and hours_since_last_lesson > _YELLOW_NO_HW_HOURS:
+        if (
+            not homework_exempt
+            and hours_since_last_lesson is not None
+            and hours_since_last_lesson > _YELLOW_NO_HW_HOURS
+        ):
             if last_hw_date is None or (last_lesson_date and last_hw_date < last_lesson_date):
                 reasons.append("no_hw_6h")
         if (

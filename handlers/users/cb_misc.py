@@ -19,6 +19,7 @@ from handlers.users.cb_navigation import (
 from keyboards.inline import (
     back_to_admin_keyboard,
     back_to_menu_keyboard,
+    make_admin_homework_done_notification_keyboard,
     make_lesson_feedback_keyboard,
     make_no_show_confirm_keyboard,
     make_no_show_lessons_keyboard,
@@ -164,6 +165,7 @@ async def process_homework_done(callback_query: types.CallbackQuery, db: Databas
                 f"✅ <b>ДЗ выполнено!</b>\n\n"
                 f"👤 {student_name}\n"
                 f"📝 Задание:\n{homework_html}",
+                reply_markup=make_admin_homework_done_notification_keyboard(hw_id),
             )
         except Exception as exc:
             logger.warning("Не удалось отправить админу уведомление о выполненном ДЗ %s: %s", hw_id, exc)

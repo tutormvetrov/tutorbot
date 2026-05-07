@@ -31,6 +31,7 @@ class DatabasePulseMixin:
               AND l.lesson_date < now()
               AND l.status IN ('active', 'completed')
               AND u.is_active = true
+              AND COALESCE(u.homework_exempt, false) = false
               AND NOT EXISTS (
                   SELECT 1 FROM homework h
                   WHERE h.student_id = l.student_id
@@ -218,6 +219,7 @@ class DatabasePulseMixin:
                        u.full_name,
                        u.speech_style,
                        u.touches_enabled,
+                       COALESCE(u.homework_exempt, false) AS homework_exempt,
                        u.goal_text,
                        sg.id AS group_id,
                        sg.title AS pair_title,
@@ -261,6 +263,7 @@ class DatabasePulseMixin:
                    sb.full_name,
                    sb.speech_style,
                    sb.touches_enabled,
+                   sb.homework_exempt,
                    sb.goal_text,
                    sb.is_pair,
                    sb.pair_title,
@@ -325,6 +328,7 @@ class DatabasePulseMixin:
                        u.speech_style,
                        u.goal_text,
                        u.touches_enabled,
+                       COALESCE(u.homework_exempt, false) AS homework_exempt,
                        sg.id AS group_id,
                        sg.title AS pair_title,
                        CASE WHEN sg.id IS NOT NULL THEN true ELSE false END AS is_pair
@@ -377,6 +381,7 @@ class DatabasePulseMixin:
                    sb.goal_text,
                    sb.is_pair,
                    sb.pair_title,
+                   sb.homework_exempt,
                    lli.last_lesson_date,
                    lli.teacher_comment,
                    nli.next_lesson_date,

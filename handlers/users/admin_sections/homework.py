@@ -29,6 +29,7 @@ from utils.homework_delivery import (
     send_single_homework_notification,
 )
 from utils.homework_text import homework_body_html
+from utils.nudge_engine import handle_hw_auto_resolve
 from utils.time import business_naive_now, business_now
 from utils.ui_text import (
     ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT,
@@ -527,6 +528,11 @@ async def admin_hw_deadline_entered(message: types.Message, state: FSMContext, d
         )
         return
 
+    try:
+        await handle_hw_auto_resolve(db, data['student_id'])
+    except Exception as exc:
+        logger.warning("Не удалось авто-закрыть нюджи для ученика %s: %s", data['student_id'], exc)
+
     student = await db.get_user(data['student_id'])
     student_name = q(student['full_name']) if student else str(data['student_id'])
     homework_html = homework_body_html(
@@ -663,6 +669,31 @@ async def admin_homework_send_now(callback_query: types.CallbackQuery, db: Datab
         reply_markup=make_homework_sent_now_keyboard(hw_id),
     )
     await callback_query.answer("Уведомление отправлено.")
+
+
+@router.callback_query(lambda c: c.data.startswith('hw_unmark_done:'))
+async def admin_homework_unmark_done(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    try:
+        hw_id = int(callback_query.data.split(':')[1])
+    except (IndexError, ValueError):
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+
+    hw = await db.get_homework_by_id(hw_id)
+    if not hw:
+        await callback_query.answer("Задание не найдено.", show_alert=True)
+        return
+    if hw["status"] != "done":
+        await callback_query.answer("Задание уже активно.", show_alert=True)
+        return
+
+    await db.unmark_homework_done(hw_id)
+    await _render_admin_homework_manage(callback_query.message, db, hw_id)
+    await callback_query.answer("ДЗ возвращено в активные.")
 
 
 @router.callback_query(lambda c: c.data.startswith('hw_edit_start:'))

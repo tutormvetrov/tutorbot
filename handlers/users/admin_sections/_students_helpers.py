@@ -255,7 +255,11 @@ async def _render_admin_student_card(message: types.Message, db: Database, stude
             pricing_rate=pricing_rate,
             progress_block=progress_block,
         ),
-        reply_markup=make_admin_student_card_keyboard(student_id, page),
+        reply_markup=make_admin_student_card_keyboard(
+            student_id,
+            page,
+            homework_exempt=bool(student.get("homework_exempt")),
+        ),
     )
 
 
@@ -293,6 +297,7 @@ async def _render_admin_student_settings(message: types.Message, db: Database, s
             lesson_duration_minutes=int(student.get("lesson_duration_minutes") or 90),
             student_type=student.get("student_type") or "adult",
             preferred_name=student.get("preferred_name"),
+            homework_exempt=bool(student.get("homework_exempt")),
         ),
     )
 

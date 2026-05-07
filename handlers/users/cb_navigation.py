@@ -60,9 +60,11 @@ async def _render_notifications_screen(message: types.Message, db: Database, use
 async def _render_homework_list(message: types.Message, db: Database, user_id: int, status: str = "active", preview: dict | None = None):
     learning_user_id = await _get_learning_student_id(db, user_id)
     items = await db.get_student_homework(learning_user_id, status)
+    learning_user = await db.get_user(learning_user_id) if learning_user_id else None
+    homework_exempt = bool(learning_user.get("homework_exempt")) if learning_user else False
     await _edit_text_for_actor(
         message,
-        build_homework_text(items, status),
+        build_homework_text(items, status, homework_exempt=homework_exempt),
         make_homework_list_keyboard(items, status) if items else make_homework_filter_keyboard(status),
         preview,
     )

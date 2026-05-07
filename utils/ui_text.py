@@ -1386,11 +1386,17 @@ def build_homework_list_text(items: list, status: str, today: date | None = None
     return "\n".join(lines)
 
 
-def build_homework_empty_text(status: str) -> str:
+def build_homework_empty_text(status: str, *, homework_exempt: bool = False) -> str:
     if status == "done":
         return (
             "✅ <b>Выполненные задания</b>\n\n"
             "Пока здесь пусто. Когда вы отметите задание как выполненное, оно появится в этом разделе."
+        )
+    if homework_exempt:
+        return (
+            "📚 <b>Активные задания</b>\n\n"
+            "По методике вашего курса домашние задания не задаются. "
+            "Если что-то изменится, преподаватель сообщит."
         )
     return (
         "📚 <b>Активные задания</b>\n\n"
@@ -1398,9 +1404,9 @@ def build_homework_empty_text(status: str) -> str:
     )
 
 
-def build_homework_text(items: list, status: str) -> str:
+def build_homework_text(items: list, status: str, *, homework_exempt: bool = False) -> str:
     if not items:
-        return build_homework_empty_text(status)
+        return build_homework_empty_text(status, homework_exempt=homework_exempt)
     return build_homework_list_text(items, status)
 
 
@@ -1901,6 +1907,7 @@ def build_admin_student_card_text(
         f"💳 Тариф: <b>{html.quote(tariff_display)}</b>",
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
+        f"📚 Режим ДЗ: <b>{'не задаю' if student.get('homework_exempt') else 'задаю'}</b>",
     ]
     goal_text = (student.get("goal_text") or "").strip()
     if goal_text:

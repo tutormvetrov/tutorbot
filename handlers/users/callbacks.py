@@ -8,6 +8,8 @@ from handlers.users.cb_reply import router as _reply_router
 from handlers.users.cb_profile import router as _profile_router
 from handlers.users.cb_freeze import router as _freeze_router
 from handlers.users.cb_misc import router as _misc_router
+from handlers.users.cb_guides import router as _guides_router
+from handlers.users.cb_guides import GUIDE_ALLOWED_BY_ROLE  # noqa: F401
 
 # Явные реэкспорты для внешних импортов (start.py, menu.py, тесты)
 from handlers.users.cb_profile import (  # noqa: F401
@@ -51,3 +53,4 @@ router.include_router(_reply_router)
 router.include_router(_profile_router)
 router.include_router(_freeze_router)
 router.include_router(_misc_router)
+router.include_router(_guides_router)

@@ -189,6 +189,7 @@ class DatabaseLessonMixin:
                   AND u.role = 'student'
                   AND u.is_active = true
                   AND COALESCE(u.is_internal_account, false) = false
+                  AND COALESCE(u.homework_exempt, false) = false
                 ORDER BY l.student_id, l.lesson_date ASC
             ),
             previous_lessons AS (

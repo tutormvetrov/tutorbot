@@ -48,11 +48,29 @@ admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("📜 Правила работы", "admin:work_rules")],
     [_btn("📝 Рабочие заметки", "admin:notes")],
     [_btn("🌍 Глобальные учебные ссылки", "admin:resources:global")],
+    [_btn("📥 Инструкции по ролям", "admin:guides")],
     [_btn("🔄 Пересчитать достижения", "admin:service:backfill_achievements")],
     [_btn("🧪 Просмотр ролей", "admin:preview")],
     [_btn("🔄 Перезапуск бота", "admin:restart")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
+
+
+def make_admin_guides_picker_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("🎓 Взрослый ученик", "guide:send:student_adult")],
+        [_btn("🎒 Школьник", "guide:send:student_school")],
+        [_btn("👨‍👩‍👧 Родитель", "guide:send:parent")],
+        [_btn("👩‍🏫 Преподаватель", "guide:send:admin")],
+        [_btn("◀️ К сервису", "admin:cat:service")],
+    ])
+
+
+def make_admin_homework_done_notification_keyboard(hw_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("📂 Открыть карточку", f"admin:homework_manage:{hw_id}")],
+        [_btn("↩️ Вернуть в активные", f"hw_unmark_done:{hw_id}")],
+    ])
 
 broadcast_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🤒 Заболел — возможен перенос", "broadcast:illness")],

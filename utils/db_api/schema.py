@@ -1362,6 +1362,24 @@ class DatabaseSchemaMixin:
         except Exception as exc:
             self._log_migration_failure("migrate_users_add_preferred_name", exc)
 
+    async def migrate_users_add_homework_exempt(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS homework_exempt BOOLEAN DEFAULT false",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_homework_exempt", exc)
+
+    async def migrate_homework_add_completed_at(self):
+        try:
+            await self.execute(
+                "ALTER TABLE homework ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_homework_add_completed_at", exc)
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -1389,6 +1407,7 @@ class DatabaseSchemaMixin:
                 "touches_enabled",
                 "engagement_mode",
                 "preferred_name",
+                "homework_exempt",
             },
             "lessons": {
                 "lesson_date",
@@ -1409,6 +1428,7 @@ class DatabaseSchemaMixin:
                 "attachment_name",
                 "attachment_mime_type",
                 "materials_parsed_at",
+                "completed_at",
             },
             "homework_delivery_queue": {
                 "homework_id",
@@ -1652,4 +1672,6 @@ class DatabaseSchemaMixin:
         await self.migrate_lessons_add_feedback_sent()
         await self.migrate_student_parent_index()
         await self.migrate_users_add_preferred_name()
+        await self.migrate_users_add_homework_exempt()
+        await self.migrate_homework_add_completed_at()
         await self.verify_required_schema()

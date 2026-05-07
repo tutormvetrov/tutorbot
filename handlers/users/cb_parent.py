@@ -280,9 +280,12 @@ async def process_parent_child_homework(callback_query: types.CallbackQuery, db:
         await callback_query.answer()
         return
     items = await _get_parent_child_homework(db, parent_id, link_id, status, preview)
+    child_user_id = child.get("student_id")
+    child_user = await db.get_user(child_user_id) if child_user_id else None
+    child_exempt = bool(child_user.get("homework_exempt")) if child_user else False
     await _edit_text_for_actor(
         callback_query.message,
-        build_homework_text(list(items or []), status),
+        build_homework_text(list(items or []), status, homework_exempt=child_exempt),
         make_parent_homework_keyboard(link_id, status=status, items=list(items or [])),
         preview,
     )

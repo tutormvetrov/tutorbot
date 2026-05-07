@@ -109,6 +109,7 @@ def select_touch_type(
     total_lessons: int = 0,
     goal_text: str | None = None,
     last_goal_reminder_days: int | None = None,
+    homework_exempt: bool = False,
 ) -> str | None:
     """Decide which type of touch to send, or None if no touch should be sent.
 
@@ -116,7 +117,7 @@ def select_touch_type(
     1. milestone_approaching (within 3 of [5, 10, 25, 50])
     2. support (difficulty from teacher comment)
     3. progress (topic from teacher comment)
-    4. hw_nudge (active HW, no comment)
+    4. hw_nudge (active HW, no comment) — skipped if homework_exempt
     5. goal_reminder (has goal, last reminder >14 days ago)
     6. motivation (streak >= 3)
     7. None
@@ -136,7 +137,7 @@ def select_touch_type(
         return "support"
     if comment_data.get("topic"):
         return "progress"
-    if has_active_hw:
+    if has_active_hw and not homework_exempt:
         return "hw_nudge"
 
     if goal_text and (last_goal_reminder_days is None or last_goal_reminder_days > 14):
