@@ -74,13 +74,24 @@ class RegistrationFlowTest(unittest.IsolatedAsyncioTestCase):
 
         await process_role_choice(role_callback, state)
         self.assertEqual(state.data["role"], "student")
-        self.assertEqual(state.data["reg_total"], 5)
+        self.assertEqual(state.data["reg_total"], 6)
 
         await process_full_name(DummyMessage("Иван Петров", user_id=101), state)
         self.assertEqual(state.data["full_name"], "Иван Петров")
 
         await process_age(DummyMessage("16", user_id=101), state)
         self.assertEqual(state.data["age"], 16)
+        self.assertEqual(state.state.state, "Registration:waiting_for_student_type")
+
+        from handlers.users.start import process_student_type
+        type_callback = DummyCallbackQuery(
+            "student_type:adult",
+            message=DummyMessage(user_id=101, full_name="Иван Петров"),
+            user_id=101,
+            full_name="Иван Петров",
+        )
+        await process_student_type(type_callback, state)
+        self.assertEqual(state.data["student_type"], "adult")
 
         await process_language(DummyMessage("хочу учить English", user_id=101), state)
         self.assertEqual(state.data["language"], "Английский")
@@ -880,6 +891,9 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
             async def get_active_lessons(self, student_id):
                 return [{"lesson_date": datetime(2026, 4, 8, 15, 30)}]
 
+            async def get_active_parent_for_student(self, student_id):
+                return None
+
         await admin_payment_count_entered(DummyMessage("4", user_id=config.ADMIN_ID, bot=bot), state, FakeDB())
 
         self.assertEqual(state.state, None)
@@ -1128,6 +1142,9 @@ class ReminderLogicTest(unittest.IsolatedAsyncioTestCase):
                     "duration_minutes": 90,
                 }
 
+            async def get_active_parent_for_student(self, student_id):
+                return None
+
             async def mark_first_lesson_invite_sent(self, telegram_id):
                 self.marked.append(telegram_id)
 
@@ -1161,6 +1178,9 @@ class ReminderLogicTest(unittest.IsolatedAsyncioTestCase):
             async def get_student_pricing_context(self, student_id):  # pragma: no cover - not called
                 raise AssertionError("pricing context fetched without candidates")
 
+            async def get_active_parent_for_student(self, student_id):  # pragma: no cover - not called
+                raise AssertionError("parent lookup fired without candidates")
+
             async def mark_first_lesson_invite_sent(self, telegram_id):  # pragma: no cover
                 raise AssertionError("mark fired without candidates")
 
@@ -1187,6 +1207,9 @@ class ReminderLogicTest(unittest.IsolatedAsyncioTestCase):
 
             async def mark_teacher_followup_sent(self, lesson_id):
                 self.sent.append(lesson_id)
+
+            async def get_student_lesson_balance(self, student_id):
+                return 5
 
         db = FakeDB()
         await teacher_lesson_followup_job(bot, db)

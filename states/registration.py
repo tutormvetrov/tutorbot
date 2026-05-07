@@ -5,11 +5,13 @@ class Registration(StatesGroup):
     waiting_for_role = State()
     waiting_for_full_name = State()
     waiting_for_age = State()
+    waiting_for_student_type = State()
     waiting_for_language = State()
     waiting_for_level = State()
     waiting_for_pair_partner_name = State()
     waiting_for_child_name = State()
     waiting_for_child_age = State()
+    waiting_for_engagement_mode = State()
     waiting_for_student_info = State()
 
 
@@ -118,3 +120,14 @@ class OnboardingGoal(StatesGroup):
 
 class AdminSetTariff(StatesGroup):
     waiting_for_tariff_text = State()
+
+
+class AdminEditPreferredName(StatesGroup):
+    waiting_for_text = State()
+
+
+class AdminWorkRule(StatesGroup):
+    waiting_for_title = State()
+    waiting_for_body = State()
+    waiting_for_edit_title = State()
+    waiting_for_edit_body = State()

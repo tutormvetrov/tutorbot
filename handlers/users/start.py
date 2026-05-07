@@ -13,7 +13,10 @@ from keyboards.inline import (
     parent_main_keyboard,
     level_keyboard,
     cancel_fsm_keyboard,
+    engagement_mode_keyboard,
+    student_type_keyboard,
     make_admin_pair_notification_keyboard,
+    make_parent_home_keyboard,
     make_post_registration_keyboard,
 )
 from states.registration import Registration
@@ -21,7 +24,11 @@ from utils.db_api.postgresql import Database
 from utils.google_calendar import load_last_sync_report
 from utils.observability import load_ops_status
 from utils.text_utils import normalize_language, parse_age
-from utils.ui_text import build_admin_dashboard_text
+from utils.ui_text import (
+    build_admin_dashboard_text,
+    build_engagement_mode_intro_text,
+    build_parent_home_text,
+)
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -200,7 +207,7 @@ async def command_start(message: Message, state: FSMContext, db: Database, comma
 @router.callback_query(F.data.startswith("role:"))
 async def process_role_choice(callback_query: CallbackQuery, state: FSMContext):
     role = callback_query.data.split(":")[1]
-    total = 6 if role == "student_pair" else 5
+    total = 7 if role == "student_pair" else 6
     await state.update_data(role=role, reg_total=total)
     await state.set_state(Registration.waiting_for_full_name)
     name_hint = (
@@ -229,7 +236,7 @@ async def process_full_name(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    total = data.get("reg_total", 5)
+    total = data.get("reg_total", 6)
     await state.update_data(full_name=name)
     await state.set_state(Registration.waiting_for_age)
     safe_name = html.quote(name)
@@ -256,7 +263,7 @@ async def process_age(message: Message, state: FSMContext):
 
     data = await state.get_data()
     role = data.get("role")
-    total = data.get("reg_total", 5)
+    total = data.get("reg_total", 6)
     await state.update_data(age=age)
 
     if role == "parent":
@@ -268,13 +275,43 @@ async def process_age(message: Message, state: FSMContext):
             reply_markup=cancel_fsm_keyboard,
         )
     else:
-        await state.set_state(Registration.waiting_for_language)
+        await state.set_state(Registration.waiting_for_student_type)
         await message.answer(
             f"✅ Возраст: <b>{age} лет</b>\n\n"
-            "Какой язык вы хотите изучать?\n\n"
-            f"Например: <code>английский</code>, <code>French</code>{_progress(3, total)}",
-            reply_markup=cancel_fsm_keyboard,
+            f"Вы взрослый ученик или школьник?{_progress(3, total)}",
+            reply_markup=student_type_keyboard,
         )
+
+
+# ─── Student type selected ───────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("student_type:"))
+async def process_student_type(callback_query: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state != Registration.waiting_for_student_type.state:
+        logger.info(
+            "stale student_type callback: user=%s state=%s data=%s",
+            callback_query.from_user.id, current_state, callback_query.data,
+        )
+        await callback_query.answer()
+        return
+    chosen = callback_query.data.split(":", 1)[1]
+    data = await state.get_data()
+    total = data.get("reg_total", 6)
+    if chosen == "schoolchild":
+        await state.update_data(student_type="schoolchild", speech_style="schoolchild")
+        label = "🎒 Школьник"
+    else:
+        await state.update_data(student_type="adult", speech_style="formal")
+        label = "🎓 Взрослый"
+    await state.set_state(Registration.waiting_for_language)
+    await callback_query.message.edit_text(
+        f"✅ Тип: <b>{label}</b>\n\n"
+        "Какой язык вы хотите изучать?\n\n"
+        f"Например: <code>английский</code>, <code>French</code>{_progress(4, total)}",
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
 
 
 # ─── Language entered ─────────────────────────────────────────────────────────
@@ -291,7 +328,7 @@ async def process_language(message: Message, state: FSMContext):
 
     language, is_known = normalize_language(raw)
     data = await state.get_data()
-    total = data.get("reg_total", 5)
+    total = data.get("reg_total", 6)
     await state.update_data(language=language)
     await state.set_state(Registration.waiting_for_level)
 
@@ -351,11 +388,14 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         telegram_id=user_id,
     )
 
+    student_type = data.get("student_type", "adult")
+    reg_speech_style = data.get("speech_style", "formal")
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, age, language, level, is_internal_account)
-            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7)
+            INSERT INTO users (telegram_id, full_name, username, role, age, language, level,
+                               is_internal_account, student_type, speech_style)
+            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7, $8, $9)
             ON CONFLICT (telegram_id) DO UPDATE
             SET full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
@@ -364,6 +404,8 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
                 language = EXCLUDED.language,
                 level = EXCLUDED.level,
                 is_internal_account = EXCLUDED.is_internal_account,
+                student_type = EXCLUDED.student_type,
+                speech_style = EXCLUDED.speech_style,
                 is_active = true
             """,
             user_id,
@@ -373,6 +415,8 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
             language,
             level,
             is_internal_account,
+            student_type,
+            reg_speech_style,
         )
     sync_parent_links = getattr(db, "sync_parent_links_for_student", None)
     if callable(sync_parent_links):
@@ -425,6 +469,20 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     )
     await callback_query.answer()
 
+    try:
+        rules = list(await db.get_work_rules() or [])
+        if rules:
+            from utils.ui_text import build_onboarding_rules_text
+            from keyboards.inline import work_rules_onboarding_keyboard
+            rules_text = build_onboarding_rules_text(rules)
+            if rules_text:
+                await callback_query.message.answer(
+                    rules_text,
+                    reply_markup=work_rules_onboarding_keyboard,
+                )
+    except Exception:
+        logger.warning("Не удалось показать правила при регистрации %s", user_id, exc_info=True)
+
 
 @router.message(StateFilter(Registration.waiting_for_pair_partner_name))
 async def process_pair_partner_name(message: Message, state: FSMContext, db: Database):
@@ -447,11 +505,14 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
         telegram_id=user_id,
     )
 
+    student_type = data.get("student_type", "adult")
+    reg_speech_style = data.get("speech_style", "formal")
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, age, language, level, is_internal_account)
-            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7)
+            INSERT INTO users (telegram_id, full_name, username, role, age, language, level,
+                               is_internal_account, student_type, speech_style)
+            VALUES ($1, $2, $3, 'student', $4, $5, $6, $7, $8, $9)
             ON CONFLICT (telegram_id) DO UPDATE
             SET full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
@@ -460,6 +521,8 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
                 language = EXCLUDED.language,
                 level = EXCLUDED.level,
                 is_internal_account = EXCLUDED.is_internal_account,
+                student_type = EXCLUDED.student_type,
+                speech_style = EXCLUDED.speech_style,
                 is_active = true
             """,
             user_id,
@@ -469,6 +532,8 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
             language,
             level,
             is_internal_account,
+            student_type,
+            reg_speech_style,
         )
 
     pair_id = None
@@ -542,6 +607,20 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
         ),
     )
 
+    try:
+        rules = list(await db.get_work_rules() or [])
+        if rules:
+            from utils.ui_text import build_onboarding_rules_text
+            from keyboards.inline import work_rules_onboarding_keyboard
+            rules_text = build_onboarding_rules_text(rules)
+            if rules_text:
+                await message.answer(
+                    rules_text,
+                    reply_markup=work_rules_onboarding_keyboard,
+                )
+    except Exception:
+        logger.warning("Не удалось показать правила при регистрации пары %s", user_id, exc_info=True)
+
 
 # ─── Parent: child info ────────────────────────────────────────────────────────
 
@@ -552,6 +631,7 @@ async def _finish_parent_registration(
     db: Database,
     student_name: str,
     student_age: int,
+    engagement_mode: str = "active",
 ):
     data = await state.get_data()
     full_name = data["full_name"]
@@ -560,18 +640,20 @@ async def _finish_parent_registration(
         username=message.from_user.username or "",
         telegram_id=message.from_user.id,
     )
+    normalized_mode = engagement_mode if engagement_mode in {"active", "trust"} else "active"
 
     async with db.pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO users (telegram_id, full_name, username, role, age, is_internal_account)
-            VALUES ($1, $2, $3, 'parent', $4, $5)
+            INSERT INTO users (telegram_id, full_name, username, role, age, is_internal_account, engagement_mode)
+            VALUES ($1, $2, $3, 'parent', $4, $5, $6)
             ON CONFLICT (telegram_id) DO UPDATE
             SET full_name = EXCLUDED.full_name,
                 username = EXCLUDED.username,
                 role = EXCLUDED.role,
                 age = EXCLUDED.age,
                 is_internal_account = EXCLUDED.is_internal_account,
+                engagement_mode = EXCLUDED.engagement_mode,
                 is_active = true
             """,
             message.from_user.id,
@@ -579,6 +661,7 @@ async def _finish_parent_registration(
             message.from_user.username,
             data.get("age"),
             is_internal_account,
+            normalized_mode,
         )
 
     find_active_student = getattr(db, "find_active_student_by_name", None)
@@ -602,18 +685,45 @@ async def _finish_parent_registration(
                 "context": "general",
                 "child_name": student_name,
                 "link_status": "linked" if linked_student else "waiting_link",
-                "message_preview": f"Регистрация родителя: {full_name}, ребёнок {student_name}",
+                "engagement_mode": normalized_mode,
+                "message_preview": f"Регистрация родителя: {full_name}, ребёнок {student_name} ({normalized_mode})",
             })
         except Exception:
             logger.warning("Не удалось записать first_contact в admin_inbox", exc_info=True)
 
-    await message.answer(
+    children = []
+    overview_fn = getattr(db, "get_parent_children_overview", None)
+    if callable(overview_fn):
+        try:
+            children = list(await overview_fn(message.from_user.id) or [])
+        except Exception:
+            logger.warning("Не удалось получить overview детей после регистрации", exc_info=True)
+            children = []
+
+    mode_line = (
+        "🎯 Режим: <b>активное наблюдение</b>"
+        if normalized_mode == "active"
+        else "🌿 Режим: <b>доверие преподавателю</b>"
+    )
+    link_line = (
+        "✅ Связь с учеником найдена."
+        if linked_student
+        else "⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика."
+    )
+    header = (
         f"✅ <b>Регистрация завершена!</b>\n\n"
         f"👤 Вы: {html.quote(full_name)}\n"
-        f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет.\n\n"
-        f"{'✅ Связь с учеником найдена.' if linked_student else '⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика.'}",
-        reply_markup=parent_main_keyboard,
+        f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет.\n"
+        f"{mode_line}\n\n"
+        f"{link_line}"
     )
+
+    if children:
+        body = build_parent_home_text(full_name, children)
+        keyboard = make_parent_home_keyboard(children)
+        await message.answer(f"{header}\n\n{body}", reply_markup=keyboard)
+    else:
+        await message.answer(header, reply_markup=parent_main_keyboard)
 
 
 @router.message(StateFilter(Registration.waiting_for_child_name))
@@ -626,7 +736,7 @@ async def process_child_name(message: Message, state: FSMContext):
         )
         return
 
-    total = (await state.get_data()).get("reg_total", 5)
+    total = (await state.get_data()).get("reg_total", 6)
     await state.update_data(child_name=child_name)
     await state.set_state(Registration.waiting_for_child_age)
     await message.answer(
@@ -638,7 +748,7 @@ async def process_child_name(message: Message, state: FSMContext):
 
 
 @router.message(StateFilter(Registration.waiting_for_child_age))
-async def process_child_age(message: Message, state: FSMContext, db: Database):
+async def process_child_age(message: Message, state: FSMContext):
     child_age = parse_age((message.text or "").strip())
     if child_age is None:
         await message.answer(
@@ -647,7 +757,8 @@ async def process_child_age(message: Message, state: FSMContext, db: Database):
         )
         return
 
-    child_name = (await state.get_data()).get("child_name", "").strip()
+    data = await state.get_data()
+    child_name = (data.get("child_name") or "").strip()
     if not child_name:
         await state.set_state(Registration.waiting_for_child_name)
         await message.answer(
@@ -656,7 +767,51 @@ async def process_child_age(message: Message, state: FSMContext, db: Database):
         )
         return
 
-    await _finish_parent_registration(message, state, db, child_name, child_age)
+    total = data.get("reg_total", 6)
+    await state.update_data(child_age=child_age)
+    await state.set_state(Registration.waiting_for_engagement_mode)
+    await message.answer(
+        build_engagement_mode_intro_text(child_name) + _progress(5, total),
+        reply_markup=engagement_mode_keyboard,
+    )
+
+
+@router.callback_query(
+    F.data.startswith("engagement:"),
+    StateFilter(Registration.waiting_for_engagement_mode),
+)
+async def process_engagement_mode_choice(callback_query: CallbackQuery, state: FSMContext, db: Database):
+    mode = callback_query.data.split(":", 1)[1]
+    if mode not in {"active", "trust"}:
+        await callback_query.answer("Выберите один из двух вариантов.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    child_name = (data.get("child_name") or "").strip()
+    child_age = data.get("child_age")
+    if not child_name or child_age is None:
+        await state.set_state(Registration.waiting_for_child_name)
+        await callback_query.message.answer(
+            "⚠️ Что-то пошло не так с данными ребёнка. Введите имя ребёнка ещё раз.",
+            reply_markup=cancel_fsm_keyboard,
+        )
+        await callback_query.answer()
+        return
+
+    try:
+        await callback_query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await _finish_parent_registration(
+        callback_query.message,
+        state,
+        db,
+        child_name,
+        int(child_age),
+        engagement_mode=mode,
+    )
+    await callback_query.answer("Готово.")
 
 
 @router.message(StateFilter(Registration.waiting_for_student_info))

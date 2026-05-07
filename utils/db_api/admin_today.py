@@ -20,11 +20,20 @@ class DatabaseAdminTodayMixin:
           pending_freeze_count   - freeze_pending lessons awaiting admin action
           unanswered_replies_count - placeholder 0 (Stage 3 wires in full Inbox)
         """
-        lessons_raw, students_with_balances, missing_hw, pending_freezes = await asyncio.gather(
+        (
+            lessons_raw,
+            students_with_balances,
+            missing_hw,
+            pending_freezes,
+            unanswered_replies_count,
+            hard_feedback,
+        ) = await asyncio.gather(
             self.get_lessons_in_window(today_start, tomorrow_start),
             self.get_students_with_balances(),
             self.get_lessons_missing_homework(),
             self.get_pending_freeze_lessons(),
+            self.count_unread_inbox(),
+            self.get_hard_feedback_today(),
         )
 
         # Build today's lessons list, enriched with student full_name and format.
@@ -55,12 +64,22 @@ class DatabaseAdminTodayMixin:
             1 for s in (students_with_balances or []) if int(s.get("lesson_balance") or 0) == 0
         )
 
+        hard_feedback_items = []
+        for fb in (hard_feedback or []):
+            fb_date = fb.get("lesson_date")
+            date_str = fb_date.strftime("%d.%m") if fb_date else ""
+            hard_feedback_items.append({
+                "full_name": fb.get("full_name") or str(fb.get("user_id", "?")),
+                "date": date_str,
+            })
+
         return {
             "lessons_today": lessons_today,
             "unpaid_count": unpaid_count,
             "missing_homework_count": len(missing_hw or []),
             "pending_freeze_count": len(pending_freezes or []),
-            "unanswered_replies_count": 0,  # Stage 3 will implement full Inbox
+            "unanswered_replies_count": unanswered_replies_count,
+            "hard_feedback": hard_feedback_items,
         }
 
     async def _get_users_by_ids(self, telegram_ids: list[int]) -> list:

@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import subprocess
 from datetime import datetime
 
 from aiogram import Router, types
@@ -314,6 +316,27 @@ async def command_sync(message: types.Message, db: Database):
             f"❌ Ошибка синхронизации:\n<code>{e}</code>\n\n"
             f"{ADMIN_SYNC_ERROR_HINT}"
         )
+
+
+# ─── /restart command ────────────────────────────────────────────────────────
+
+@router.message(Command('restart'))
+async def command_restart(message: types.Message):
+    if not _is_admin(message.from_user.id):
+        return
+    from keyboards.inline import InlineKeyboardMarkup, InlineKeyboardButton
+    confirm_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, перезапустить", callback_data="admin:restart:confirm"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="admin:home"),
+        ],
+    ])
+    await message.answer(
+        "🔄 <b>Перезапуск бота</b>\n\n"
+        "Бот будет недоступен несколько секунд.\n"
+        "Вы уверены?",
+        reply_markup=confirm_kb,
+    )
 
 
 # ─── Back to admin panel ──────────────────────────────────────────────────────

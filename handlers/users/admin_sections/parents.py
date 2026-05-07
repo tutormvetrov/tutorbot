@@ -6,9 +6,11 @@ from handlers.users.admin_sections.common import (
     MessageEditor,
     get_message_origin,
     is_admin,
+    parse_admin_callback,
     q,
 )
 from keyboards.inline import (
+    _btn,
     back_to_admin_keyboard,
     make_admin_parent_card_keyboard,
     make_admin_parent_danger_keyboard,
@@ -17,6 +19,7 @@ from keyboards.inline import (
     make_admin_student_danger_review_keyboard,
     make_back_button_keyboard,
 )
+from aiogram.types import InlineKeyboardMarkup
 from states.registration import AdminParentsDirectory
 from utils.db_api.postgresql import Database
 from utils.ui_text import (
@@ -133,7 +136,7 @@ async def _render_admin_parent_card(message: types.Message, db: Database, parent
     snapshot = await db.get_parent_deletion_snapshot(parent_id)
     await message.edit_text(
         build_admin_parent_card_text(parent, children, snapshot.get("payments_as_payer", 0)),
-        reply_markup=make_admin_parent_card_keyboard(parent_id, page),
+        reply_markup=make_admin_parent_card_keyboard(parent_id, page, children=children),
     )
 
 
@@ -448,3 +451,93 @@ async def admin_parent_delete_confirm(callback_query: types.CallbackQuery, db: D
         reply_markup=make_back_button_keyboard("◀️ К списку родителей", f"admin:parents:page:{page}"),
     )
     await callback_query.answer()
+
+
+# ─── Manual parent-student linking ───────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:parent:link_student:"))
+async def admin_parent_link_student(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 4)
+    parent_id = int(parts[3])
+    page = int(parts[4]) if len(parts) > 4 else 0
+    students = list(await db.get_students_without_parent() or [])
+    if not students:
+        await callback_query.answer("Нет учеников без привязки к родителю.", show_alert=True)
+        return
+    rows = []
+    for s in students:
+        rows.append([_btn(
+            s["full_name"],
+            f"admin:parent:pick_student:{parent_id}:{s['telegram_id']}:{page}",
+        )])
+    rows.append([_btn("◀️ Назад", f"admin:parent_card:{parent_id}:{page}")])
+    await callback_query.message.edit_text(
+        "➕ <b>Привязать ученика</b>\n\nВыберите ученика из списка:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:parent:pick_student:"))
+async def admin_parent_pick_student(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 5)
+    parent_id = int(parts[3])
+    student_id = int(parts[4])
+    page = int(parts[5]) if len(parts) > 5 else 0
+    link_id = await db.create_parent_student_link(parent_id, student_id)
+    if link_id is None:
+        await callback_query.answer("Связь уже существует.", show_alert=True)
+        await _render_admin_parent_card(callback_query.message, db, parent_id, page)
+        return
+    student = await db.get_user(student_id)
+    student_name = q(student["full_name"]) if student else str(student_id)
+    await callback_query.answer(f"✅ {student_name} привязан(а)")
+    await _render_admin_parent_card(callback_query.message, db, parent_id, page)
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:parent:unlink:"))
+async def admin_parent_unlink(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 5)
+    link_id = int(parts[3])
+    parent_id = int(parts[4])
+    page = int(parts[5]) if len(parts) > 5 else 0
+    link = await db.get_parent_student_link(link_id)
+    if not link:
+        await callback_query.answer("Связь не найдена.", show_alert=True)
+        return
+    student_name = q(link.get("student_name") or link.get("student_info") or "?")
+    parent = await db.get_user(parent_id)
+    parent_name = q(parent["full_name"]) if parent else str(parent_id)
+    await callback_query.message.edit_text(
+        f"⚠️ Отвязать <b>{student_name}</b> от <b>{parent_name}</b>?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [
+                _btn("✅ Да, отвязать", f"admin:parent:unlink_confirm:{link_id}:{parent_id}:{page}"),
+                _btn("❌ Отмена", f"admin:parent_card:{parent_id}:{page}"),
+            ],
+        ]),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:parent:unlink_confirm:"))
+async def admin_parent_unlink_confirm(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 5)
+    link_id = int(parts[3])
+    parent_id = int(parts[4])
+    page = int(parts[5]) if len(parts) > 5 else 0
+    await db.deactivate_parent_student_link(link_id)
+    await callback_query.answer("Связь снята.")
+    await _render_admin_parent_card(callback_query.message, db, parent_id, page)

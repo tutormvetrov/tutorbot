@@ -4,16 +4,20 @@ from asyncpg.pool import Pool
 from data import config
 from utils.db_api.admin_inbox import DatabaseAdminInboxMixin
 from utils.db_api.admin_today import DatabaseAdminTodayMixin
+from utils.db_api.balance_transactions import DatabaseBalanceTransactionsMixin
 from utils.db_api.calendar_links import DatabaseCalendarLinksMixin
+from utils.db_api.finance import DatabaseFinanceMixin
 from utils.db_api.homework import DatabaseHomeworkMixin
 from utils.db_api.journey import DatabaseJourneyMixin
 from utils.db_api.lessons import DatabaseLessonMixin
 from utils.db_api.payments import DatabasePaymentMixin
+from utils.db_api.progress import DatabaseProgressMixin
 from utils.db_api.pulse import DatabasePulseMixin
 from utils.db_api.schema import DatabaseSchemaMixin
 from utils.db_api.student_resources import DatabaseStudentResourcesMixin
 from utils.db_api.study_plans import DatabaseStudyPlanMixin
 from utils.db_api.users import DatabaseUserMixin
+from utils.db_api.work_rules import DatabaseWorkRulesMixin
 
 
 class Database(
@@ -29,6 +33,10 @@ class Database(
     DatabaseStudentResourcesMixin,
     DatabaseJourneyMixin,
     DatabasePulseMixin,
+    DatabaseProgressMixin,
+    DatabaseBalanceTransactionsMixin,
+    DatabaseFinanceMixin,
+    DatabaseWorkRulesMixin,
 ):
     def __init__(self):
         self.pool: Pool | None = None

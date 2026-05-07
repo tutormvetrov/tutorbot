@@ -83,18 +83,6 @@ class DatabaseStudentResourcesMixin:
         )
         return True
 
-    async def get_resource(self, resource_id: int) -> dict | None:
-        row = await self.execute(
-            """
-            SELECT id, student_id, label, url, provider, is_primary, sort_order, created_at, created_by
-            FROM student_resources
-            WHERE id = $1
-            """,
-            resource_id,
-            fetchrow=True,
-        )
-        return dict(row) if row else None
-
     async def list_student_resources(
         self,
         student_id: int | None,
@@ -138,14 +126,3 @@ class DatabaseStudentResourcesMixin:
     async def list_global_resources(self) -> list[dict]:
         return await self.list_student_resources(None, include_global=False)
 
-    async def update_student_resource_label(self, resource_id: int, label: str) -> bool:
-        result = await self.execute(
-            "UPDATE student_resources SET label = $2 WHERE id = $1",
-            resource_id,
-            label,
-            execute=True,
-        )
-        try:
-            return int((result or "UPDATE 0").split()[-1]) > 0
-        except Exception:
-            return False

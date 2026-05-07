@@ -178,3 +178,45 @@ def extract_student_name(value: str) -> str:
     # "Анна Петрова (14)" / "Анна Петрова, 14" -> "Анна Петрова"
     raw = re.split(r"\(|,", raw, maxsplit=1)[0]
     return " ".join(raw.split()).strip()
+
+
+# ─── Preferred-name derivation ─────────────────────────────────────────────────
+
+_RU_SURNAME_SUFFIXES = (
+    "ов", "ев", "ёв", "ин", "ын", "ский", "цкий", "ской",
+    "ова", "ева", "ёва", "ина", "ына", "ская", "цкая",
+)
+
+
+def _looks_like_surname(token: str) -> bool:
+    low = token.lower().replace("ё", "е")
+    # Comparison: suffixes above include "ёв"/"ёва" forms; replacing ё→е
+    # keeps the suffix list correct because "ев"/"ева" cover those cases.
+    return any(low.endswith(suf.replace("ё", "е")) for suf in _RU_SURNAME_SUFFIXES)
+
+
+def derive_preferred_name(full_name: str | None) -> str:
+    """Heuristically extract a first name from a free-form full_name.
+
+    Russian admin records often store "Last First" while UI registration tends
+    to capture "First Last". This picks the token most likely to be a first
+    name. The result is meant to be backfilled once into a `preferred_name`
+    column and then editable in the admin UI.
+    """
+    if not full_name:
+        return ""
+    tokens = [t for t in full_name.strip().split() if t]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    if len(tokens) == 2:
+        a, b = tokens
+        a_sur, b_sur = _looks_like_surname(a), _looks_like_surname(b)
+        if a_sur and not b_sur:
+            return b
+        if b_sur and not a_sur:
+            return a
+        return a
+    # 3+ tokens: official Russian order is Surname-First-Patronymic → token #2.
+    return tokens[1]

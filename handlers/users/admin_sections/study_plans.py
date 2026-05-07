@@ -154,6 +154,11 @@ async def admin_study_plan_pdf_received(message: types.Message, state: FSMContex
         await message.answer("⚠️ Отправьте именно PDF-файл.", reply_markup=cancel_fsm_keyboard)
         return
 
+    max_pdf_bytes = 10 * 1024 * 1024
+    if document.file_size and document.file_size > max_pdf_bytes:
+        await message.answer("⚠️ PDF слишком большой (макс. 10 МБ).", reply_markup=cancel_fsm_keyboard)
+        return
+
     try:
         tg_file = await message.bot.get_file(document.file_id)
         suffix = Path(file_name or "plan.pdf").suffix or ".pdf"

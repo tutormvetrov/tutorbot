@@ -168,6 +168,13 @@ class DatabaseUserMixin:
             telegram_id, stage, execute=True,
         )
 
+    async def update_student_preferred_name(self, telegram_id: int, preferred_name: str | None):
+        value = (preferred_name or "").strip() or None
+        await self.execute(
+            "UPDATE users SET preferred_name = $2 WHERE telegram_id = $1",
+            telegram_id, value, execute=True,
+        )
+
     async def get_all_students(self):
         return await self.execute(
             """
@@ -352,10 +359,9 @@ class DatabaseUserMixin:
                 g.*,
                 u.full_name AS primary_student_name,
                 COALESCE((
-                    SELECT SUM(p.lessons_remaining)::int
-                    FROM payments p
-                    WHERE p.student_id = g.primary_student_id
-                      AND p.status = 'confirmed'
+                    SELECT SUM(bt.amount_lessons)::int
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = g.primary_student_id
                 ), 0) AS lesson_balance,
                 (
                     SELECT MIN(l.lesson_date)
@@ -637,10 +643,9 @@ class DatabaseUserMixin:
                       AND h.deadline < now()
                 ), 0) AS overdue_homework_count,
                 COALESCE((
-                    SELECT SUM(p.lessons_remaining)::int
-                    FROM payments p
-                    WHERE p.student_id = sp.student_id
-                      AND p.status = 'confirmed'
+                    SELECT SUM(bt.amount_lessons)::int
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = sp.student_id
                 ), 0) AS lesson_balance,
                 COALESCE(u.lesson_format, 'online') AS lesson_format
             FROM student_parent sp
@@ -697,10 +702,9 @@ class DatabaseUserMixin:
                       AND h.deadline < now()
                 ), 0) AS overdue_homework_count,
                 COALESCE((
-                    SELECT SUM(p.lessons_remaining)::int
-                    FROM payments p
-                    WHERE p.student_id = sp.student_id
-                      AND p.status = 'confirmed'
+                    SELECT SUM(bt.amount_lessons)::int
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = sp.student_id
                 ), 0) AS lesson_balance,
                 COALESCE(u.lesson_format, 'online') AS lesson_format
             FROM student_parent sp
@@ -780,10 +784,9 @@ class DatabaseUserMixin:
                 u.language,
                 u.level,
                 COALESCE((
-                    SELECT SUM(p.lessons_remaining)::int
-                    FROM payments p
-                    WHERE p.student_id = u.telegram_id
-                      AND p.status = 'confirmed'
+                    SELECT SUM(bt.amount_lessons)::int
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = u.telegram_id
                 ), 0) AS lesson_balance,
                 (
                     SELECT MIN(l.lesson_date)
@@ -855,6 +858,31 @@ class DatabaseUserMixin:
             """,
             fetch=True,
         )
+
+    async def get_parent_engagement_mode(self, telegram_id: int) -> str:
+        row = await self.execute(
+            "SELECT engagement_mode FROM users WHERE telegram_id = $1 AND role = 'parent'",
+            telegram_id,
+            fetchrow=True,
+        )
+        if not row:
+            return "active"
+        mode = (row.get("engagement_mode") or "").strip()
+        return mode if mode in {"active", "trust"} else "active"
+
+    async def set_parent_engagement_mode(self, telegram_id: int, mode: str) -> str:
+        normalized = mode if mode in {"active", "trust"} else "active"
+        await self.execute(
+            """
+            UPDATE users
+            SET engagement_mode = $2
+            WHERE telegram_id = $1 AND role = 'parent'
+            """,
+            telegram_id,
+            normalized,
+            execute=True,
+        )
+        return normalized
 
     async def deactivate_parent(self, telegram_id: int):
         await self.execute(
@@ -1083,15 +1111,15 @@ class DatabaseUserMixin:
                 u.telegram_id,
                 u.full_name,
                 COALESCE(u.speech_style, 'formal') AS speech_style,
-                COALESCE(SUM(p.lessons_remaining), 0)::int AS lesson_balance
+                COALESCE((
+                    SELECT SUM(bt.amount_lessons)
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = u.telegram_id
+                ), 0)::int AS lesson_balance
             FROM users u
-            LEFT JOIN payments p
-              ON p.student_id = u.telegram_id
-             AND p.status = 'confirmed'
             WHERE u.role = 'student'
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
-            GROUP BY u.telegram_id, u.full_name, COALESCE(u.speech_style, 'formal')
             ORDER BY u.full_name
             """,
             fetch=True,
@@ -1108,7 +1136,11 @@ class DatabaseUserMixin:
                 COALESCE(u.lesson_format, 'online') AS lesson_format,
                 u.cached_first_lesson_date,
                 u.student_stage_override,
-                COALESCE(SUM(p.lessons_remaining), 0)::int AS balance,
+                COALESCE((
+                    SELECT SUM(bt.amount_lessons)
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = u.telegram_id
+                ), 0)::int AS balance,
                 EXISTS (
                     SELECT 1
                     FROM student_group_members sgm
@@ -1118,15 +1150,9 @@ class DatabaseUserMixin:
                       AND sg.is_active = true
                 ) AS is_pair
             FROM users u
-            LEFT JOIN payments p
-              ON p.student_id = u.telegram_id
-             AND p.status = 'confirmed'
-             AND p.lessons_remaining > 0
             WHERE u.role = 'student'
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
-            GROUP BY u.telegram_id, u.full_name, u.speech_style, u.level,
-                     u.lesson_format, u.cached_first_lesson_date, u.student_stage_override
             ORDER BY u.full_name
             """,
             fetch=True,
@@ -1139,6 +1165,103 @@ class DatabaseUserMixin:
             telegram_id,
             execute=True,
         )
+
+    async def toggle_student_type(self, telegram_id: int) -> str:
+        """Переключает тип ученика. Сохраняет informal-style при возврате в adult."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user = await conn.fetchrow(
+                    "SELECT student_type, speech_style FROM users WHERE telegram_id = $1",
+                    telegram_id,
+                )
+                current_type = (user["student_type"] if user else "adult") or "adult"
+                current_style = (user["speech_style"] if user else "formal") or "formal"
+
+                if current_type == "schoolchild":
+                    # Возврат в adult: если до этого был informal — восстановить informal,
+                    # иначе — formal (нельзя оставить schoolchild для взрослого).
+                    new_type = "adult"
+                    new_style = "informal" if current_style == "informal" else "formal"
+                else:
+                    new_type = "schoolchild"
+                    new_style = "schoolchild"
+
+                await conn.execute(
+                    "UPDATE users SET student_type = $1, speech_style = $2 WHERE telegram_id = $3",
+                    new_type, new_style, telegram_id,
+                )
+                return new_type
+
+    async def get_students_without_parent(self):
+        """Active students with no active parent link — for admin picker."""
+        return await self.execute(
+            """
+            SELECT u.telegram_id, u.full_name
+            FROM users u
+            WHERE u.role = 'student'
+              AND u.is_active = true
+              AND COALESCE(u.is_internal_account, false) = false
+              AND NOT EXISTS (
+                  SELECT 1 FROM student_parent sp
+                  WHERE sp.student_id = u.telegram_id
+                    AND sp.is_active = true
+              )
+            ORDER BY u.full_name
+            """,
+            fetch=True,
+        )
+
+    async def create_parent_student_link(self, parent_id: int, student_id: int) -> int | None:
+        """Создаёт связь. Если активная связь уже существует — возвращает None."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                existing = await conn.fetchval(
+                    """
+                    SELECT id FROM student_parent
+                    WHERE parent_id = $1 AND student_id = $2 AND is_active = true
+                    """,
+                    parent_id, student_id,
+                )
+                if existing:
+                    return None
+                student = await conn.fetchrow(
+                    "SELECT full_name FROM users WHERE telegram_id = $1",
+                    student_id,
+                )
+                student_info = student["full_name"] if student else str(student_id)
+                return await conn.fetchval(
+                    """
+                    INSERT INTO student_parent (parent_id, student_id, student_info, is_active)
+                    VALUES ($1, $2, $3, true)
+                    RETURNING id
+                    """,
+                    parent_id, student_id, student_info,
+                )
+
+    async def get_parent_student_link(self, link_id: int):
+        """Возвращает запись student_parent с присоединённым именем ученика."""
+        return await self.execute(
+            """
+            SELECT sp.id, sp.parent_id, sp.student_id, sp.student_info, sp.is_active,
+                   u.full_name AS student_name
+            FROM student_parent sp
+            LEFT JOIN users u ON u.telegram_id = sp.student_id
+            WHERE sp.id = $1
+            """,
+            link_id, fetchrow=True,
+        )
+
+    async def deactivate_parent_student_link(self, link_id: int) -> bool:
+        result = await self.execute(
+            "UPDATE student_parent SET is_active = false WHERE id = $1",
+            link_id, execute=True,
+        )
+        # asyncpg возвращает "UPDATE N" — извлекаем число
+        try:
+            affected = int(result.split()[-1])
+        except (ValueError, IndexError):
+            affected = 0
+        return affected > 0
 
     async def set_lesson_duration(self, telegram_id: int, minutes: int):
         await self.execute(
@@ -1197,14 +1320,13 @@ class DatabaseUserMixin:
                     FROM (
                         SELECT u.telegram_id
                         FROM users u
-                        LEFT JOIN payments p
-                          ON p.student_id = u.telegram_id
-                         AND p.status = 'confirmed'
+                        LEFT JOIN balance_transactions bt
+                          ON bt.student_id = u.telegram_id
                         WHERE u.role = 'student'
                           AND u.is_active = true
                           AND COALESCE(u.is_internal_account, false) = false
                         GROUP BY u.telegram_id
-                        HAVING COALESCE(SUM(p.lessons_remaining), 0) = 0
+                        HAVING COALESCE(SUM(bt.amount_lessons), 0) <= 0
                     ) unpaid
                 ) AS unpaid_students,
                 (
@@ -1265,10 +1387,9 @@ class DatabaseUserMixin:
                       AND h.status = 'active'
                 ), 0) AS active_homework_count,
                 COALESCE((
-                    SELECT SUM(p.lessons_remaining)::int
-                    FROM payments p
-                    WHERE p.student_id = student.telegram_id
-                      AND p.status = 'confirmed'
+                    SELECT SUM(bt.amount_lessons)::int
+                    FROM balance_transactions bt
+                    WHERE bt.student_id = student.telegram_id
                 ), 0) AS lesson_balance
                 ,
                 (

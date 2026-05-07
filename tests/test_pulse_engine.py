@@ -1,8 +1,6 @@
 """Tests for utils/pulse_engine.py: traffic-light logic, text formatting, quiet hours."""
 from datetime import datetime, timedelta, date
 
-import pytest
-
 from utils.pulse_engine import (
     compute_student_health,
     build_pulse_text,
@@ -210,7 +208,10 @@ class TestBuildPulseText:
     def test_with_students(self):
         now = datetime.now()
         health_list = [
-            compute_student_health(_make_row(full_name="Аня", balance=0), now=now),
+            compute_student_health(
+                _make_row(full_name="Аня", balance=0, last_lesson_date=now - timedelta(days=5)),
+                now=now,
+            ),
             compute_student_health(_make_row(full_name="Катя", balance=5), now=now),
         ]
         text = build_pulse_text(health_list, today_date=date(2026, 5, 4))

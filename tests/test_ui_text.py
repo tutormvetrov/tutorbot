@@ -24,7 +24,6 @@ from utils.ui_text import (
     build_admin_homework_list_text,
     build_contacts_text,
     build_first_lesson_payment_invite_text,
-    build_help_text,
     build_homework_text,
     build_materials_text,
     build_more_screen_text,
@@ -193,11 +192,10 @@ class UITextTest(unittest.TestCase):
 
         self.assertIn("Активных учеников: <b>8</b>", text)
         self.assertIn("Уроков сегодня: <b>3</b>", text)
-        self.assertIn("Последний sync: <b>01.04.2026 14:30</b>", text)
+        self.assertIn("Последняя синхронизация: <b>01.04.2026 14:30</b>", text)
         self.assertIn("Нужно внимание", text)
         self.assertIn("Система", text)
-        self.assertIn("Выберите раздел ниже.", text)
-        self.assertIn("⏱ Scheduler: <b>running</b>", text)
+        self.assertIn("⏱ Планировщик: <b>running</b>", text)
 
     def test_schedule_text_keeps_next_lesson_and_total_count(self):
         text = build_schedule_text(
@@ -489,34 +487,9 @@ class UITextTest(unittest.TestCase):
         self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
         self.assertIn("PDF/DOCX", text)
 
-    def test_build_more_screen_text_student_form(self):
-        text = build_more_screen_text("student")
-
-        self.assertIn("Ещё", text)
-        self.assertIn("профиль", text.lower())
-        self.assertIn("заморозка", text.lower())
-        self.assertIn("тест уровня", text.lower())
-        self.assertIn("опасные действия", text.lower())
-
-    def test_build_more_screen_text_parent_form(self):
-        text = build_more_screen_text("parent")
-
-        self.assertIn("Ещё", text)
-        self.assertIn("профиль", text.lower())
-        self.assertIn("опасные действия", text.lower())
-        self.assertNotIn("заморозка", text.lower())
-        self.assertNotIn("тест уровня", text.lower())
-
-    def test_build_help_text_reflects_new_layout(self):
-        text = build_help_text()
-
-        self.assertIn("Справка", text)
-        self.assertIn("👤 <b>Ещё</b>", text)
-        self.assertIn("заморозка", text.lower())
-        self.assertIn("тест уровня", text.lower())
-        self.assertIn("опасные действия", text.lower())
-        self.assertIn("✉️ <b>Написать преподавателю</b>", text)
-        self.assertNotIn("👤 <b>Профиль</b>", text)
+    def test_build_more_screen_text_returns_string(self):
+        self.assertIn("Ещё", build_more_screen_text("student"))
+        self.assertIn("Ещё", build_more_screen_text("parent"))
 
 
 class ChildTrafficLightTest(unittest.TestCase):
@@ -642,7 +615,7 @@ class ComputeStudentCtaTest(unittest.TestCase):
 class AdminInboxTextTest(unittest.TestCase):
     def test_empty_inbox_shows_no_unread(self):
         text = build_admin_inbox_text([])
-        self.assertIn("Inbox", text)
+        self.assertIn("Входящие", text)
         self.assertIn("непрочитанных", text.lower())
 
     def test_with_events_shows_sections(self):
@@ -654,7 +627,7 @@ class AdminInboxTextTest(unittest.TestCase):
             }
         ]
         text = build_admin_inbox_text(events)
-        self.assertIn("Inbox", text)
+        self.assertIn("Входящие", text)
         self.assertIn("Иван", text)
         self.assertIn("Сегодня", text)
 

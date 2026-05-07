@@ -326,9 +326,12 @@ class StudyPlanAdminFlowTest(unittest.IsolatedAsyncioTestCase):
 
 class PricingAdminFlowTest(unittest.IsolatedAsyncioTestCase):
     def test_parse_rate_line_supports_arbitrary_group_size(self):
-        self.assertEqual(_parse_rate_line("3 75 6000 RUB"), (3, 75, 6000.0, "RUB"))
-        self.assertEqual(_parse_rate_line("2 90 5000 eur"), (2, 90, 5000.0, "EUR"))
-        self.assertIsNone(_parse_rate_line("0 90 5000 RUB"))
+        # New format: label group_size duration amount [currency]
+        self.assertEqual(_parse_rate_line("Групповой 3 75 6000 RUB"), ("Групповой", 3, 75, 6000.0, "RUB"))
+        self.assertEqual(_parse_rate_line("Пара_90 2 90 5000 eur"), ("Пара 90", 2, 90, 5000.0, "EUR"))
+        self.assertIsNone(_parse_rate_line("Тест 0 90 5000 RUB"))
+        # Too few parts
+        self.assertIsNone(_parse_rate_line("3 75 6000 RUB"))
 
     async def test_admin_saves_pricing_rate(self):
         state = DummyState()
@@ -338,16 +341,16 @@ class PricingAdminFlowTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.calls = []
 
-            async def upsert_pricing_rate(self, group_size, duration, amount, currency):
-                self.calls.append((group_size, duration, amount, currency))
+            async def upsert_pricing_rate(self, group_size, duration, amount, currency, label=""):
+                self.calls.append((label, group_size, duration, amount, currency))
 
-        message = DummyMessage("4 60 8000 RUB", user_id=config.ADMIN_ID)
+        message = DummyMessage("Групповой 4 60 8000 RUB", user_id=config.ADMIN_ID)
         db = FakeDB()
 
         await admin_pricing_rate_entered(message, state, db)
 
         self.assertEqual(state.state, None)
-        self.assertEqual(db.calls, [(4, 60, 8000.0, "RUB")])
+        self.assertEqual(db.calls, [("Групповой", 4, 60, 8000.0, "RUB")])
         self.assertIn("Тариф сохранён", message.answers[-1])
 
 

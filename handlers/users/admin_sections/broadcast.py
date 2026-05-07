@@ -105,7 +105,7 @@ def _matches_segment_filters(student: dict, filters: dict) -> bool:
         (filters["levels"],  student.get("level", "")),
         (filters["formats"], student.get("lesson_format", "")),
         (filters["balance"], student.get("balance_bucket", "")),
-        (filters["types"],   student.get("student_type", "")),
+        (filters["types"],   student.get("learning_mode", "")),
     ]
     return any(bucket and val in bucket for bucket, val in checks)
 
@@ -153,7 +153,7 @@ async def _enter_segment_filter(target, state: FSMContext, db: Database, broadca
             "level": s.get("level") or "",
             "lesson_format": s.get("lesson_format") or "online",
             "balance_bucket": _balance_bucket(s.get("balance") or 0),
-            "student_type": "pair" if s.get("is_pair") else "solo",
+            "learning_mode": "pair" if s.get("is_pair") else "solo",
             "stage": stage,
         })
 

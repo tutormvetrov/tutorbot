@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from utils.brand import get_brand_tone
-from utils.speech import choose_form
 
 if TYPE_CHECKING:
     pass
@@ -70,35 +69,30 @@ def parse_teacher_comment(comment: str | None) -> dict:
 
     text = comment.strip()
 
-    # Extract first sentence
     first_sentence_match = re.match(r"(.+?[.!?])\s", text)
     if first_sentence_match:
         result["raw_first_sentence"] = first_sentence_match.group(1).strip()
     else:
         result["raw_first_sentence"] = text[:100].strip()
 
-    # Try topic patterns
     for pattern in _TOPIC_PATTERNS:
         m = pattern.search(text)
         if m:
             result["topic"] = m.group(1).strip()[:80]
             break
 
-    # Try difficulty patterns
     for pattern in _DIFFICULTY_PATTERNS:
         m = pattern.search(text)
         if m:
             result["difficulty"] = m.group(1).strip()[:80]
             break
 
-    # Try task patterns
     for pattern in _TASK_PATTERNS:
         m = pattern.search(text)
         if m:
             result["task"] = m.group(1).strip()[:80]
             break
 
-    # If no topic found, use first sentence as topic
     if not result["topic"] and result["raw_first_sentence"]:
         result["topic"] = result["raw_first_sentence"]
 
@@ -112,23 +106,31 @@ def select_touch_type(
     has_active_hw: bool,
     streak_weeks: int,
     balance: int,
+    total_lessons: int = 0,
+    goal_text: str | None = None,
+    last_goal_reminder_days: int | None = None,
 ) -> str | None:
     """Decide which type of touch to send, or None if no touch should be sent.
 
-    Decision tree:
-    1. Has topic from teacher_comment -> "progress"
-    2. Has difficulty from teacher_comment -> "support"
-    3. No comment data but active HW -> "hw_nudge"
-    4. streak >= 3 weeks -> "motivation"
-    5. Otherwise -> None (don't send)
-
-    Also: balance <= 0 -> None (don't motivate unpaid student)
+    Priority:
+    1. milestone_approaching (within 3 of [5, 10, 25, 50])
+    2. support (difficulty from teacher comment)
+    3. progress (topic from teacher comment)
+    4. hw_nudge (active HW, no comment)
+    5. goal_reminder (has goal, last reminder >14 days ago)
+    6. motivation (streak >= 3)
+    7. None
     """
     if balance <= 0:
         return None
 
+    from utils.achievements import LESSON_MILESTONES
+    for ms in LESSON_MILESTONES:
+        remaining = ms - total_lessons
+        if 1 <= remaining <= 3:
+            return "milestone_approaching"
+
     if comment_data.get("topic") and comment_data.get("difficulty"):
-        # If both topic and difficulty, prefer support (more personal)
         return "support"
     if comment_data.get("difficulty"):
         return "support"
@@ -136,12 +138,52 @@ def select_touch_type(
         return "progress"
     if has_active_hw:
         return "hw_nudge"
+
+    if goal_text and (last_goal_reminder_days is None or last_goal_reminder_days > 14):
+        return "goal_reminder"
+
     if streak_weeks >= 3:
         return "motivation"
     return None
 
 
 # ── Message rendering ────────────────────────────────────────────────────────
+
+def _resolve_templates(
+    templates: dict,
+    tpl_key: str,
+    tone: str,
+    speech_style: str | None,
+    is_pair: bool,
+) -> list[str]:
+    """Resolve template list, supporting both old and new format.
+
+    Old format: type -> tone -> string or [strings]
+    New format: type -> tone -> speech_style -> [strings]
+    """
+    type_templates = templates.get(tpl_key, {})
+    if not type_templates and is_pair:
+        base_key = tpl_key.replace("_pair", "")
+        type_templates = templates.get(base_key, {})
+
+    tone_data = type_templates.get(tone) or type_templates.get("warm", {})
+    if not tone_data:
+        return []
+
+    if isinstance(tone_data, list):
+        return tone_data
+    if isinstance(tone_data, str):
+        return [tone_data]
+
+    if isinstance(tone_data, dict):
+        ss = speech_style or "informal"
+        variants = tone_data.get(ss) or tone_data.get("informal", [])
+        if isinstance(variants, str):
+            return [variants]
+        return variants if isinstance(variants, list) else []
+
+    return []
+
 
 def render_touch_message(
     template_type: str,
@@ -151,100 +193,106 @@ def render_touch_message(
     speech_style: str | None = None,
     is_pair: bool = False,
     partner_name: str | None = None,
-) -> str | None:
+    last_template_index: int | None = None,
+) -> tuple[str | None, int | None]:
     """Render a touch message from templates.
 
-    Args:
-        template_type: "progress", "support", "hw_nudge", "motivation"
-        student_name: student's first name or full name
-        context: dict with "topic", "difficulty", "N" (streak), etc.
-        brand_tone: "warm", "premium", "neutral", "strict"
-        speech_style: "formal" or None (informal)
-        is_pair: whether this is a pair student
-        partner_name: partner's name for pair touches
-
-    Returns rendered message text, or None if template not found.
+    Returns (message_text, template_index) or (None, None).
     """
     templates = _load_templates()
     if not templates:
-        return None
+        return None, None
 
-    # Determine template key
     tpl_key = template_type
     if is_pair and partner_name:
         tpl_key = f"{template_type}_pair"
 
     tone = brand_tone or get_brand_tone()
-    type_templates = templates.get(tpl_key, {})
-    if not type_templates:
-        # Fallback to non-pair version
-        type_templates = templates.get(template_type, {})
+    variants = _resolve_templates(templates, tpl_key, tone, speech_style, is_pair)
 
-    tone_variants = type_templates.get(tone)
-    if not tone_variants:
-        # Fallback to "warm"
-        tone_variants = type_templates.get("warm", [])
-    if not tone_variants:
-        return None
+    if not variants:
+        return None, None
 
-    # Pick random variant
-    template_str = random.choice(tone_variants)
+    if len(variants) > 1 and last_template_index is not None:
+        candidates = [i for i in range(len(variants)) if i != last_template_index]
+        idx = random.choice(candidates) if candidates else 0
+    else:
+        idx = random.randrange(len(variants))
 
-    # Substitute placeholders
+    template_str = variants[idx]
+
+    from utils.speech import inflect_name_instrumental
+
     topic = context.get("topic") or context.get("difficulty") or context.get("raw_first_sentence") or ""
+    inflected_partner = inflect_name_instrumental(partner_name) if partner_name else ""
     message = template_str.replace("{name}", student_name)
     message = message.replace("{topic}", topic)
-    message = message.replace("{partner}", partner_name or "")
+    message = message.replace("{partner}", inflected_partner)
     message = message.replace("{N}", str(context.get("N", 0)))
+    message = message.replace("{streak}", str(context.get("N", 0)))
+    message = message.replace("{total_lessons}", str(context.get("total_lessons", 0)))
+    message = message.replace("{goal}", str(context.get("goal", "")))
+    message = message.replace("{next_milestone_text}", str(context.get("next_milestone_text", "")))
 
-    # Apply speech style (formal = Вы, informal = ты)
-    if speech_style == "formal":
-        # Templates are written in informal by default; for formal, apply choose_form
-        # This is a simplified approach - templates should ideally have both forms
-        message = message.replace("попробуй", "попробуйте")
-        message = message.replace("не стесняйся", "не стесняйтесь")
-        message = message.replace("не переживай", "не переживайте")
-        message = message.replace("пиши", "пишите")
-        message = message.replace("обрати", "обратите")
-        message = message.replace("продолжай", "продолжайте")
-        message = message.replace("задавай", "задавайте")
-        message = message.replace("так держать", "продолжайте в том же духе")
-        message = message.replace("молодец", "")
-        message = message.replace("застрял", "застряли")
-        message = message.replace("проверь", "проверьте")
-
-    return message.strip()
+    return message.strip(), idx
 
 
 # ── Send decision ────────────────────────────────────────────────────────────
 
+TOUCHES_WEEKLY_CAP = 1
+TOUCHES_TEMPLATE_TYPE_COOLDOWN_DAYS = 7
+
+
 def should_send_touch(
     last_lesson: datetime | None,
     next_lesson: datetime | None,
-    touches_this_week: int,
+    recent_touches: list,
     today: date,
     balance: int,
+    candidate_template_type: str | None = None,
 ) -> bool:
     """Decide whether a touch should be sent today.
 
-    Rules:
-    - Max 2 per week
-    - Not on lesson day
-    - Balance > 0
-    - Must have last_lesson (otherwise nothing to reference)
+    Args:
+        recent_touches: rows from `get_recent_touches` over the past 7 days,
+            ordered DESC by `sent_at`. Each row carries `sent_at` and
+            `template_type` (and `template_index` after the dedup fix).
+        candidate_template_type: when known, also enforces a per-template-type
+            cooldown so we never repeat the same kind of message inside the
+            cooldown window.
     """
-    if touches_this_week >= 2:
-        return False
     if balance <= 0:
         return False
     if last_lesson is None:
         return False
-
-    # Not on lesson day
     if last_lesson.date() == today:
         return False
     if next_lesson and next_lesson.date() == today:
         return False
+
+    # At most one touch per student per day, regardless of type.
+    for t in (recent_touches or []):
+        sent_at = t.get("sent_at") if isinstance(t, dict) else None
+        if sent_at is not None and sent_at.date() == today:
+            return False
+
+    # Weekly cap.
+    if len(recent_touches or []) >= TOUCHES_WEEKLY_CAP:
+        return False
+
+    # Per-template-type cooldown.
+    if candidate_template_type is not None:
+        cutoff = datetime.combine(today, datetime.min.time()) - timedelta(
+            days=TOUCHES_TEMPLATE_TYPE_COOLDOWN_DAYS
+        )
+        for t in (recent_touches or []):
+            if not isinstance(t, dict):
+                continue
+            if t.get("template_type") != candidate_template_type:
+                continue
+            sent_at = t.get("sent_at")
+            if sent_at is not None and sent_at >= cutoff:
+                return False
 
     return True
 

@@ -156,6 +156,18 @@ class FakePreviewDB:
             "active_homework": 1,
         }
 
+    async def get_student_transactions(self, student_id, limit=15):
+        if student_id == 201:
+            return [
+                {
+                    "type": "payment_added",
+                    "amount_lessons": 4,
+                    "created_at": datetime(2026, 4, 7, 12, 0),
+                    "payment_amount": 4500,
+                }
+            ]
+        return []
+
     async def mark_homework_done(self, hw_id, user_id):
         self.homework_done_calls.append((hw_id, user_id))
 

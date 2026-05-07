@@ -289,29 +289,41 @@ class DatabaseStudyPlanMixin:
         duration_minutes: int,
         amount: float,
         currency: str = "RUB",
+        label: str = "",
     ) -> int:
+        if label:
+            # Try update by label first
+            existing = await self.execute(
+                "SELECT id FROM lesson_pricing_rates WHERE label = $1 AND is_active = true",
+                label,
+                fetchval=True,
+            )
+            if existing:
+                await self.execute(
+                    """
+                    UPDATE lesson_pricing_rates
+                    SET group_size = $1, duration_minutes = $2, amount = $3,
+                        currency = $4, updated_at = CURRENT_TIMESTAMP
+                    WHERE label = $5 AND is_active = true
+                    """,
+                    group_size, duration_minutes, amount, currency, label,
+                    execute=True,
+                )
+                return existing
         return await self.execute(
             """
             INSERT INTO lesson_pricing_rates (
-                group_size,
-                duration_minutes,
-                amount,
-                currency,
-                is_active,
-                updated_at
+                group_size, duration_minutes, amount, currency, label,
+                is_active, updated_at
             )
-            VALUES ($1, $2, $3, $4, true, CURRENT_TIMESTAMP)
-            ON CONFLICT (group_size, duration_minutes) DO UPDATE
-            SET amount = EXCLUDED.amount,
-                currency = EXCLUDED.currency,
-                is_active = true,
-                updated_at = CURRENT_TIMESTAMP
+            VALUES ($1, $2, $3, $4, $5, true, CURRENT_TIMESTAMP)
             RETURNING id
             """,
             group_size,
             duration_minutes,
             amount,
             currency,
+            label,
             fetchval=True,
         )
 
@@ -321,7 +333,7 @@ class DatabaseStudyPlanMixin:
             SELECT *
             FROM lesson_pricing_rates
             WHERE is_active = true
-            ORDER BY group_size ASC, duration_minutes ASC
+            ORDER BY group_size ASC, duration_minutes ASC, label ASC
             """,
             fetch=True,
         )
@@ -334,15 +346,63 @@ class DatabaseStudyPlanMixin:
             WHERE group_size = $1
               AND duration_minutes = $2
               AND is_active = true
+            ORDER BY id ASC
+            LIMIT 1
             """,
             group_size,
             duration_minutes,
             fetchrow=True,
         )
 
+    async def get_pricing_rate_by_id(self, rate_id: int):
+        return await self.execute(
+            """
+            SELECT *
+            FROM lesson_pricing_rates
+            WHERE id = $1 AND is_active = true
+            """,
+            rate_id,
+            fetchrow=True,
+        )
+
+    async def assign_pricing_rate(self, student_id: int, rate_id: int | None):
+        await self.execute(
+            "UPDATE users SET pricing_rate_id = $1 WHERE telegram_id = $2",
+            rate_id, student_id,
+            execute=True,
+        )
+
+    async def delete_pricing_rate(self, rate_id: int):
+        await self.execute(
+            "UPDATE lesson_pricing_rates SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+            rate_id,
+            execute=True,
+        )
+        # Unlink students who were on this rate
+        await self.execute(
+            "UPDATE users SET pricing_rate_id = NULL WHERE pricing_rate_id = $1",
+            rate_id,
+            execute=True,
+        )
+
     async def get_student_pricing_context(self, student_id: int):
         user = await self.get_user(student_id)
-        duration = int((user or {}).get("lesson_duration_minutes") or 90)
+        if not user:
+            return {"group_size": 1, "duration_minutes": 90, "rate": None}
+
+        # If student has an assigned rate, use it directly
+        rate_id = user.get("pricing_rate_id")
+        if rate_id:
+            rate = await self.get_pricing_rate_by_id(rate_id)
+            if rate:
+                return {
+                    "group_size": int(rate.get("group_size") or 1),
+                    "duration_minutes": int(rate.get("duration_minutes") or 90),
+                    "rate": rate,
+                }
+
+        # Fallback: lookup by group_size + duration
+        duration = int(user.get("lesson_duration_minutes") or 90)
         group_size = 1
         get_pair = getattr(self, "get_student_pair_for_student", None)
         if callable(get_pair):

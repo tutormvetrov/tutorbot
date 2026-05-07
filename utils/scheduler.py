@@ -11,6 +11,7 @@ from data.config import load_teacher_info
 from keyboards.inline import (
     make_back_button_keyboard,
     make_first_lesson_invite_keyboard,
+    make_lesson_feedback_keyboard,
     make_lesson_presence_keyboard,
     make_lesson_followup_keyboard,
     make_study_plan_open_keyboard,
@@ -24,8 +25,6 @@ from utils.homework_delivery import (
 from utils.homework_text import homework_body_html
 from utils.nudge_engine import check_and_send_nudges
 from utils.touch_engine import (
-    compute_touch_send_time,
-    is_in_send_window,
     parse_teacher_comment,
     render_touch_message,
     select_touch_type,
@@ -37,6 +36,7 @@ from utils.speech import choose_form
 from utils.time import business_naive_now, business_today
 from utils.ui_text import (
     build_feedback_after_first_message,
+    build_finance_briefing_block,
     build_first_lesson_payment_invite_text,
     build_first_lesson_payment_invite_text_for_parent,
     build_goal_prompt_message,
@@ -178,7 +178,7 @@ async def homework_reminder_job(bot, db: "Database"):
                 f"⏰ <b>Напоминание о домашнем задании!</b>\n\n"
                 f"📝 Задание:\n{homework_html}\n"
                 f"📅 Срок сдачи: <b>завтра, {deadline_str}</b>\n\n"
-                f"{choose_form(hw.get('speech_style'), 'Не забудьте', 'Не забудь')} про это задание.",
+                f"{choose_form(hw.get('speech_style'), 'Не забудьте про это задание.', 'Не забудь про это задание.', 'Не забудь сделать, это важно 💪')}",
                 reply_markup=make_teacher_reply_keyboard("homework", hw['id']),
             )
             await db.mark_homework_reminder_sent(hw['id'])
@@ -326,7 +326,7 @@ async def lesson_reminder_job(bot, db: "Database"):
             if is_offline:
                 message_text += (
                     "\n📍 Формат: <b>очный урок</b>.\n"
-                    f"{choose_form(lesson.get('speech_style'), 'Пожалуйста, подтвердите, что будете вовремя.', 'Подтверди, что будешь вовремя.')}\n\n"
+                    f"{choose_form(lesson.get('speech_style'), 'Пожалуйста, подтвердите, что будете вовремя.', 'Подтверди, что будешь вовремя.', 'Подтверди, что будешь вовремя! 🚀')}\n\n"
                 )
             else:
                 message_text += (
@@ -366,11 +366,12 @@ async def teacher_lesson_followup_job(bot, db: "Database"):
 
     for lesson in lessons:
         try:
+            balance = await db.get_student_lesson_balance(lesson["student_id"])
             await asyncio.wait_for(
                 bot.send_message(
                     config.ADMIN_ID,
                     build_teacher_lesson_followup_text(lesson),
-                    reply_markup=make_lesson_followup_keyboard(lesson["id"], lesson["student_id"]),
+                    reply_markup=make_lesson_followup_keyboard(lesson["id"], lesson["student_id"], balance=balance),
                 ),
                 timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
             )
@@ -861,6 +862,20 @@ async def morning_briefing_job(bot, db: "Database"):
         return
 
     text = build_briefing_text(health_list, today_lessons or [], today_date=now.date())
+
+    try:
+        week_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+        income_week = await db.get_income_period(week_start)
+        discipline = list(await db.get_payment_discipline() or [])
+        overdue_names = [
+            d["full_name"] for d in discipline
+            if d["balance"] <= 0 and d.get("last_payment_at")
+        ]
+        finance_block = build_finance_briefing_block(income_week, overdue_names)
+        text = text + "\n\n" + finance_block
+    except Exception:
+        pass
+
     most_urgent = get_most_urgent_student_id(health_list)
     keyboard = make_briefing_keyboard(most_urgent)
 
@@ -881,10 +896,17 @@ async def homework_nudge_job(bot, db: "Database"):
 async def between_lesson_touches_job(bot, db: "Database"):
     """Межурочные касания: персонализированные сообщения ученикам между уроками."""
     from utils.brand import get_brand_tone
+    from utils.observability import load_touches_runtime
     from utils.pulse_engine import is_quiet_hours
 
     now = datetime.now()
     today = now.date()
+
+    runtime_state = load_touches_runtime()
+    if runtime_state.get("paused"):
+        update_job_status("between_lesson_touches", "ok", paused=True, sent=0)
+        write_runtime_event("between_lesson_touches", "ok", paused=True, sent=0)
+        return
 
     if is_quiet_hours(now, for_student=True):
         update_job_status("between_lesson_touches", "ok", skipped_quiet=True, sent=0)
@@ -900,6 +922,7 @@ async def between_lesson_touches_job(bot, db: "Database"):
     for student in (candidates or []):
         student_id = student["telegram_id"]
         full_name = student.get("full_name") or "---"
+        preferred_name = student.get("preferred_name")
         speech_style = student.get("speech_style")
         last_lesson = student.get("last_lesson_date")
         next_lesson = student.get("next_lesson_date")
@@ -909,23 +932,17 @@ async def between_lesson_touches_job(bot, db: "Database"):
         partner_name = student.get("partner_name")
         goal_text = student.get("goal_text")
 
-        # Rate limiting: touches this week
+        # Pull the past-week touch history once; pass it to should_send_touch
+        # so day-cap, weekly-cap, and per-template-type cooldown all share data.
         week_ago = now - timedelta(days=7)
-        recent = await db.get_recent_touches(student_id, since=week_ago)
-        touches_this_week = len(recent) if recent else 0
+        recent = await db.get_recent_touches(student_id, since=week_ago) or []
 
-        # Check if we should send a touch
         balance_row = await db.get_student_lesson_balance(student_id)
         balance = int(balance_row) if balance_row else 0
 
-        if not should_send_touch(last_lesson, next_lesson, touches_this_week, today, balance):
+        # Coarse gate: per-day, weekly, lesson-day rules (no template type yet).
+        if not should_send_touch(last_lesson, next_lesson, recent, today, balance):
             continue
-
-        # Check send window (midpoint between lessons +/- 1 hour)
-        if last_lesson and next_lesson:
-            send_time = compute_touch_send_time(last_lesson, next_lesson)
-            if not is_in_send_window(send_time, now, window_hours=1.0):
-                continue
 
         # Parse teacher comment and select touch type
         comment_data = parse_teacher_comment(teacher_comment)
@@ -940,31 +957,74 @@ async def between_lesson_touches_job(bot, db: "Database"):
                 streak_weeks = h.get("streak_weeks", 0)
                 break
 
-        touch_type = select_touch_type(comment_data, has_active_hw, streak_weeks, balance)
+        # Total lessons and goal reminder timing
+        total_lessons = 0
+        for row in (health_data or []):
+            if row.get("telegram_id") == student_id:
+                total_lessons = int(row.get("total_lessons") or 0)
+                break
+
+        last_goal_reminder_days = None
+        if goal_text and recent:
+            for t in recent:
+                if t.get("template_type") == "goal_reminder":
+                    last_goal_reminder_days = (now - t["sent_at"]).days
+                    break
+
+        touch_type = select_touch_type(
+            comment_data, has_active_hw, streak_weeks, balance,
+            total_lessons=total_lessons,
+            goal_text=goal_text,
+            last_goal_reminder_days=last_goal_reminder_days,
+        )
         if not touch_type:
             continue
 
-        # Render message
+        # Re-check with the chosen template type to enforce per-type cooldown.
+        if not should_send_touch(
+            last_lesson, next_lesson, recent, today, balance,
+            candidate_template_type=touch_type,
+        ):
+            continue
+
+        # Find last template index for dedup
+        last_template_index = None
+        if recent:
+            for t in recent:
+                if t.get("template_type") == touch_type and t.get("template_index") is not None:
+                    last_template_index = t["template_index"]
+                    break
+
+        from utils.achievements import compute_next_milestone
+        next_milestone_text = compute_next_milestone(total_lessons) or ""
+
         context = {
             "topic": comment_data.get("topic") or comment_data.get("difficulty"),
             "difficulty": comment_data.get("difficulty"),
             "raw_first_sentence": comment_data.get("raw_first_sentence"),
             "N": streak_weeks,
+            "total_lessons": total_lessons,
+            "goal": goal_text or "",
+            "next_milestone_text": next_milestone_text,
         }
 
-        message = render_touch_message(
+        display_name = preferred_name or (
+            full_name.split()[0] if full_name and full_name != "---" else full_name
+        )
+
+        message, tpl_idx = render_touch_message(
             template_type=touch_type,
-            student_name=full_name.split()[0] if full_name != "---" else full_name,
+            student_name=display_name,
             context=context,
             brand_tone=brand_tone,
             speech_style=speech_style,
             is_pair=is_pair,
             partner_name=partner_name,
+            last_template_index=last_template_index,
         )
         if not message:
             continue
 
-        # Send
         try:
             await bot.send_message(student_id, message)
             await db.log_touch(
@@ -973,6 +1033,7 @@ async def between_lesson_touches_job(bot, db: "Database"):
                 template_key=None,
                 context_source="teacher_comment" if teacher_comment else ("homework" if has_active_hw else "goal"),
                 context_snippet=(teacher_comment or "")[:100] if teacher_comment else None,
+                template_index=tpl_idx,
             )
             sent_count += 1
         except Exception as exc:
@@ -980,6 +1041,107 @@ async def between_lesson_touches_job(bot, db: "Database"):
 
     update_job_status("between_lesson_touches", "ok", checked=checked, sent=sent_count)
     write_runtime_event("between_lesson_touches", "ok", checked=checked, sent=sent_count)
+
+
+async def achievement_check_job(bot, db: "Database"):
+    """Daily job: check all students for new achievements, insert with notified=False."""
+    from utils.achievements import ACHIEVEMENTS
+    from utils.pulse_engine import _compute_streak_weeks
+
+    students = await db.get_all_pulse_data()
+    granted = 0
+
+    for row in (students or []):
+        student_id = row["telegram_id"]
+        total_lessons = int(row.get("total_lessons") or 0)
+        first_lesson = row.get("first_lesson_date")
+        last_lesson = row.get("last_lesson_date")
+        now = datetime.now()
+
+        streak = _compute_streak_weeks(first_lesson, last_lesson, total_lessons, now)
+        tenure_weeks = max(0, (now - first_lesson).days // 7) if first_lesson else 0
+        goal_text = row.get("goal_text")
+
+        progress = await db.get_student_progress(student_id)
+        plan_total = int(progress.get("plan_total") or 0)
+        plan_done = int(progress.get("plan_done") or 0)
+
+        hw_months = await db.get_student_hw_perfect_months(student_id)
+
+        metrics = {
+            "total_lessons": total_lessons,
+            "streak_weeks": streak,
+            "tenure_weeks": tenure_weeks,
+            "goal_text": goal_text,
+            "plan_total": plan_total,
+            "plan_done": plan_done,
+            "hw_perfect_months": len(hw_months) if hw_months else 0,
+        }
+
+        for achievement in ACHIEVEMENTS:
+            if achievement["check"](metrics):
+                was_new = await db.grant_achievement(student_id, achievement["key"])
+                if was_new:
+                    granted += 1
+
+    update_job_status("achievement_check", "ok", granted=granted, checked=len(students or []))
+    write_runtime_event("achievement_check", "ok", granted=granted, checked=len(students or []))
+
+
+async def achievement_notify_job(bot, db: "Database"):
+    """Daily job: send congratulation messages for unnotified achievements."""
+    from utils.achievements import build_achievement_congrats
+
+    rows = await db.get_unnotified_achievements()
+    sent = 0
+
+    for row in (rows or []):
+        try:
+            text = build_achievement_congrats(
+                row["achievement_key"],
+                speech_style=row.get("speech_style"),
+            )
+            if not text:
+                await db.mark_achievement_notified(row["id"])
+                continue
+            await asyncio.wait_for(
+                bot.send_message(row["user_id"], text),
+                timeout=10,
+            )
+            await db.mark_achievement_notified(row["id"])
+            sent += 1
+        except Exception as exc:
+            logger.warning("Ошибка отправки достижения %s для %s: %s", row["achievement_key"], row["user_id"], exc)
+
+    update_job_status("achievement_notify", "ok", sent=sent, total=len(rows or []))
+    write_runtime_event("achievement_notify", "ok", sent=sent, total=len(rows or []))
+
+
+async def lesson_feedback_request_job(bot, db: "Database"):
+    """Send 'How was the lesson?' messages to students after lessons end."""
+    lessons = await db.get_lessons_for_feedback_request()
+    sent = 0
+
+    for lesson in (lessons or []):
+        try:
+            ss = lesson.get("speech_style") or "informal"
+            question = choose_form(ss, "Как прошло занятие?", "Как прошёл урок?")
+            keyboard = make_lesson_feedback_keyboard(lesson["lesson_id"], speech_style=ss)
+            await asyncio.wait_for(
+                bot.send_message(
+                    lesson["student_id"],
+                    question,
+                    reply_markup=keyboard,
+                ),
+                timeout=10,
+            )
+            await db.mark_feedback_request_sent(lesson["lesson_id"])
+            sent += 1
+        except Exception as exc:
+            logger.warning("Ошибка отправки фидбэк-запроса для урока %s: %s", lesson["lesson_id"], exc)
+
+    update_job_status("lesson_feedback_request", "ok", sent=sent, checked=len(lessons or []))
+    write_runtime_event("lesson_feedback_request", "ok", sent=sent, checked=len(lessons or []))
 
 
 def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
@@ -1110,11 +1272,35 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         id="homework_nudge",
         name="ДЗ-надзиратель: напоминание об отправке ДЗ",
     )
+    if config.TOUCHES_ENABLED:
+        scheduler.add_job(
+            between_lesson_touches_job,
+            CronTrigger(hour=config.TOUCHES_RUN_HOUR, minute=config.TOUCHES_RUN_MINUTE),
+            args=[bot, db],
+            id="between_lesson_touches",
+            name="Межурочные касания (раз в день)",
+        )
+    else:
+        logger.warning("between_lesson_touches_job отключён через TOUCHES_ENABLED=false")
     scheduler.add_job(
-        between_lesson_touches_job,
-        CronTrigger(minute=0),
+        achievement_check_job,
+        CronTrigger(hour=1, minute=0),
         args=[bot, db],
-        id="between_lesson_touches",
-        name="Межурочные касания",
+        id="achievement_check",
+        name="Проверка достижений учеников",
+    )
+    scheduler.add_job(
+        achievement_notify_job,
+        CronTrigger(hour=9, minute=15),
+        args=[bot, db],
+        id="achievement_notify",
+        name="Отправка поздравлений с достижениями",
+    )
+    scheduler.add_job(
+        lesson_feedback_request_job,
+        CronTrigger(minute="*/15"),
+        args=[bot, db],
+        id="lesson_feedback_request",
+        name="Запрос фидбэка после урока",
     )
     return scheduler

@@ -80,12 +80,11 @@ async def dismiss_goal_prompt(callback_query: types.CallbackQuery, state: FSMCon
     await state.clear()
     try:
         await callback_query.message.edit_text(
-            "Хорошо, вернёмся к этому позже. Когда будете готовы — кнопка «🎯 Указать цель» "
-            "появится снова на главном экране.",
+            "Хорошо, вернёмся позже.",
             reply_markup=back_to_menu_keyboard,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("goal dismiss edit_text failed: %s", exc)
     await callback_query.answer()
 
 
@@ -175,8 +174,8 @@ async def process_pair_goal_text(message: types.Message, state: FSMContext, db: 
                 "pair_id": pair_id,
                 "message_preview": raw[:200],
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("inbox event pair_goal_set failed: %s", exc)
 
     await state.clear()
     await message.answer(PAIR_GOAL_SAVED_TEXT, reply_markup=back_to_menu_keyboard)

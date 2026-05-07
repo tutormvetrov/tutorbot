@@ -23,9 +23,19 @@ PGUSER = str(os.getenv("PGUSER", "")).strip()
 PGPASSWORD = str(os.getenv("PGPASSWORD", "")).strip()
 DATABASE = str(os.getenv("DATABASE", "")).strip()
 PGHOST = str(os.getenv("PGHOST", "")).strip()
-PGPORT = str(os.getenv("PGPORT", "")).strip()
+PGPORT = str(os.getenv("PGPORT", "5432")).strip() or "5432"
 
 POSTGRES_URI = f"postgresql://{PGUSER}:{PGPASSWORD}@{PGHOST}:{PGPORT}/{DATABASE}"
+
+TOUCHES_ENABLED = str(os.getenv("TOUCHES_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+try:
+    TOUCHES_RUN_HOUR = int(os.getenv("TOUCHES_RUN_HOUR", "11"))
+except ValueError:
+    TOUCHES_RUN_HOUR = 11
+try:
+    TOUCHES_RUN_MINUTE = int(os.getenv("TOUCHES_RUN_MINUTE", "0"))
+except ValueError:
+    TOUCHES_RUN_MINUTE = 0
 
 TUTORBOT_TIMEZONE = str(os.getenv("TUTORBOT_TIMEZONE", "Europe/Moscow")).strip() or "Europe/Moscow"
 try:

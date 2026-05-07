@@ -84,19 +84,6 @@ class DatabaseMiddleware(BaseMiddleware):
             if db_user and db_user["is_active"] is False:
                 await self._reject_deactivated_user(event, user_id)
                 return None
-                if isinstance(event, CallbackQuery):
-                    try:
-                        await event.answer("Аккаунт деактивирован.", show_alert=True)
-                    except Exception as exc:
-                        logger.warning("Не удалось показать alert деактивированному пользователю %s: %s", user_id, exc)
-                    if event.message:
-                        try:
-                            await event.message.answer(DEACTIVATED_ACCOUNT_TEXT)
-                        except Exception as exc:
-                            logger.warning("Не удалось отправить текст деактивированному пользователю %s: %s", user_id, exc)
-                elif isinstance(event, Message):
-                    await event.answer(DEACTIVATED_ACCOUNT_TEXT)
-                return None
 
         try:
             return await handler(event, data)
@@ -130,6 +117,28 @@ async def main():
     logger.info(f"Бот @{me.username} успешно подключён!")
     write_runtime_event("startup", "ok", bot_username=me.username)
 
+    # Обновляем сообщение о рестарте, если оно было сохранено до перезапуска
+    import json
+    _pending_restart = config.PROJECT_ROOT / "data" / "pending_restart_msg.json"
+    if _pending_restart.exists():
+        logger.info("Найден pending_restart_msg.json — обновляю сообщение")
+        try:
+            _data = json.loads(_pending_restart.read_text(encoding="utf-8"))
+            await bot.edit_message_text(
+                chat_id=_data["chat_id"],
+                message_id=_data["message_id"],
+                text="✅ <b>Бот перезагружен</b>",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+            logger.info("Сообщение о рестарте обновлено")
+        except Exception as _exc:
+            logger.warning("Не удалось обновить сообщение о рестарте: %s", _exc)
+        finally:
+            _pending_restart.unlink(missing_ok=True)
+    else:
+        logger.info("pending_restart_msg.json не найден — обычный старт")
+
     # Инициализируем БД
     db = Database()
     await db.create_pool()
@@ -148,28 +157,22 @@ async def main():
     logger.info("Планировщик запущен.")
     update_ops_status(status="running", bot_username=me.username, scheduler="running")
 
-    # Публичные команды
+    # Публичные команды (минимальное меню для учеников/родителей)
     public_commands = [
-        BotCommand(command="start",     description="Начать работу с ботом"),
-        BotCommand(command="menu",      description="Главное меню"),
-        BotCommand(command="help",      description="Помощь"),
-        BotCommand(command="profile",   description="Мой профиль"),
-        BotCommand(command="freeze",    description="Заморозка занятия"),
-        BotCommand(command="plan",      description="Учебный план"),
-        BotCommand(command="materials", description="Учебные материалы"),
+        BotCommand(command="start", description="Начать работу с ботом"),
+        BotCommand(command="menu",  description="Главное меню"),
+        BotCommand(command="help",  description="Помощь"),
     ]
     await bot.set_my_commands(public_commands)
 
     # Команды администратора
     if config.ADMIN_ID:
-        admin_commands = public_commands + [
-            BotCommand(command="admin",  description="Панель администратора"),
-            BotCommand(command="sync",   description="Синхронизация Google Calendar"),
-            BotCommand(command="block",  description="Block Telegram ID"),
-            BotCommand(command="unblock", description="Unblock Telegram ID"),
-            BotCommand(command="blocked", description="Blocked Telegram IDs"),
-            BotCommand(command="today",  description="Сегодня"),
-            BotCommand(command="health", description="Здоровье бота"),
+        admin_commands = [
+            BotCommand(command="start",   description="Начать работу с ботом"),
+            BotCommand(command="admin",   description="Панель администратора"),
+            BotCommand(command="menu",    description="Главное меню"),
+            BotCommand(command="sync",    description="Синхронизация Google Calendar"),
+            BotCommand(command="restart", description="Перезапуск бота"),
         ]
         try:
             await bot.set_my_commands(

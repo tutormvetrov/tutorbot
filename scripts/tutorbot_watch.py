@@ -13,8 +13,14 @@ DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(DEFAULT_ROOT / ".env")
 
 ROOT = Path(os.getenv("TUTORBOT_ROOT", DEFAULT_ROOT)).resolve()
+import re as _re
+
 SERVICE_NAME = os.getenv("TUTORBOT_SERVICE_NAME", "tutorbot").strip() or "tutorbot"
+if not _re.fullmatch(r"[a-zA-Z0-9_\-]+", SERVICE_NAME):
+    raise ValueError(f"Invalid TUTORBOT_SERVICE_NAME: {SERVICE_NAME!r}")
 SYSTEMD_SCOPE = os.getenv("TUTORBOT_SYSTEMD_SCOPE", "system").strip() or "system"
+if SYSTEMD_SCOPE not in ("system", "user"):
+    raise ValueError(f"Invalid TUTORBOT_SYSTEMD_SCOPE: {SYSTEMD_SCOPE!r}")
 WATCH_TARGETS = [
     ROOT / "app.py",
     ROOT / "loader.py",

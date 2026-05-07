@@ -20,6 +20,7 @@ _RED_NO_HW_HOURS = 24
 _YELLOW_NO_HW_HOURS = 6
 _RED_NO_LESSON_DAYS = 14
 _YELLOW_NO_LESSON_DAYS = 7
+_PAYMENT_GRACE_HOURS = 48  # урок прошёл недавно — оплата могла не залогироваться
 
 
 # ── Quiet hours ──────────────────────────────────────────────────────────────
@@ -102,7 +103,14 @@ def compute_student_health(row: dict, now: datetime | None = None) -> dict:
 
     # Red conditions
     if balance <= _RED_BALANCE:
-        reasons.append("balance_0")
+        hours_since_lesson = (
+            (now - last_lesson_date).total_seconds() / 3600
+            if last_lesson_date else None
+        )
+        if hours_since_lesson is not None and hours_since_lesson <= _PAYMENT_GRACE_HOURS:
+            reasons.append("payment_not_logged")
+        else:
+            reasons.append("balance_0")
     if hours_since_last_lesson is not None and hours_since_last_lesson > _RED_NO_HW_HOURS:
         if last_hw_date is None or (last_lesson_date and last_hw_date < last_lesson_date):
             reasons.append("no_hw_24h")
@@ -125,7 +133,7 @@ def compute_student_health(row: dict, now: datetime | None = None) -> dict:
         ):
             reasons.append("no_lesson_7d")
 
-    yellow_reasons = {"balance_1", "no_hw_6h", "no_lesson_7d"}
+    yellow_reasons = {"balance_1", "no_hw_6h", "no_lesson_7d", "payment_not_logged"}
 
     if is_red:
         color = "red"
@@ -197,6 +205,7 @@ def _reason_label(reason: str) -> str:
         "no_hw_6h": "ДЗ не отправлено >6ч",
         "no_lesson_14d": "нет уроков >14 дней",
         "no_lesson_7d": "нет уроков 7-14 дней",
+        "payment_not_logged": "внеси оплату",
     }
     return labels.get(reason, reason)
 

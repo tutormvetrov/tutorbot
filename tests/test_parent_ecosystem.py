@@ -10,14 +10,24 @@ if str(ROOT) not in sys.path:
 
 
 from handlers.users.callbacks import (
+    process_parent_child_home,
     process_parent_child_homework,
     process_parent_child_homework_detail,
     process_parent_child_homework_file,
     process_parent_child_payments,
     process_parent_child_schedule,
+    process_parent_child_study_plan,
+    process_parent_engagement_toggle,
 )
 from handlers.users.screens import get_user_home_payload
-from handlers.users.start import command_start, process_age, process_child_age, process_child_name, process_full_name
+from handlers.users.start import (
+    command_start,
+    process_age,
+    process_child_age,
+    process_child_name,
+    process_engagement_mode_choice,
+    process_full_name,
+)
 from tests.helpers import DummyBot, DummyCallbackQuery, DummyConn, DummyMessage, DummyPool, DummyState
 from utils.ui_text import child_traffic_light, lesson_balance_label
 
@@ -45,38 +55,59 @@ class RegistrationEntryPointTest(unittest.IsolatedAsyncioTestCase):
         )
 
 
+def _make_parent_registration_db():
+    class FakeDB:
+        def __init__(self):
+            self.conn = DummyConn()
+            self.pool = DummyPool(self.conn)
+            self.link_calls = []
+            self.children_overview = []
+
+        async def find_active_student_by_name(self, full_name):
+            self.link_calls.append(("find", full_name))
+            return {"telegram_id": 555123, "full_name": full_name, "role": "student", "is_active": True}
+
+        async def upsert_parent_student_link(self, parent_id, student_info, student_id=None):
+            self.link_calls.append(("link", parent_id, student_info, student_id))
+            return 1
+
+        async def get_parent_children_overview(self, parent_id):
+            return self.children_overview
+
+    return FakeDB()
+
+
 class ParentRegistrationFlowTest(unittest.IsolatedAsyncioTestCase):
-    async def test_parent_registration_creates_parent_profile_and_child_link(self):
+    async def test_parent_registration_active_mode_creates_profile_and_child_link(self):
         state = DummyState()
-        await state.update_data(role="parent", reg_total=5)
+        await state.update_data(role="parent", reg_total=6)
 
         await process_full_name(DummyMessage("Мария Иванова", user_id=801), state)
         await process_age(DummyMessage("35", user_id=801), state)
         await process_child_name(DummyMessage("Анна Иванова", user_id=801), state)
 
-        class FakeDB:
-            def __init__(self):
-                self.conn = DummyConn()
-                self.pool = DummyPool(self.conn)
-                self.link_calls = []
+        age_message = DummyMessage("12", user_id=801, full_name="Мария Иванова")
+        await process_child_age(age_message, state)
+        self.assertEqual(state.state.state, "Registration:waiting_for_engagement_mode")
+        self.assertTrue(any("Хочу быть в курсе" in t for t in _keyboard_texts(age_message.reply_markups[-1])))
 
-            async def find_active_student_by_name(self, full_name):
-                self.link_calls.append(("find", full_name))
-                return {"telegram_id": 555123, "full_name": full_name, "role": "student", "is_active": True}
-
-            async def upsert_parent_student_link(self, parent_id, student_info, student_id=None):
-                self.link_calls.append(("link", parent_id, student_info, student_id))
-                return 1
-
-        db = FakeDB()
-        message = DummyMessage("12", user_id=801, full_name="Мария Иванова")
-
-        await process_child_age(message, state, db)
+        db = _make_parent_registration_db()
+        finish_message = DummyMessage(user_id=801, full_name="Мария Иванова")
+        callback = DummyCallbackQuery(
+            "engagement:active",
+            message=finish_message,
+            user_id=801,
+            full_name="Мария Иванова",
+        )
+        await process_engagement_mode_choice(callback, state, db)
 
         self.assertIsNone(state.state)
         self.assertTrue(db.conn.executed)
-        self.assertIn("INSERT INTO users", db.conn.executed[0][0])
-        self.assertIn("'parent'", db.conn.executed[0][0])
+        insert_sql = db.conn.executed[0][0]
+        self.assertIn("INSERT INTO users", insert_sql)
+        self.assertIn("'parent'", insert_sql)
+        self.assertIn("engagement_mode", insert_sql)
+        self.assertEqual(db.conn.executed[0][1][-1], "active")
         self.assertEqual(
             db.link_calls,
             [
@@ -84,14 +115,30 @@ class ParentRegistrationFlowTest(unittest.IsolatedAsyncioTestCase):
                 ("link", 801, "Анна Иванова (12)", 555123),
             ],
         )
-        self.assertIn("Связь с учеником найдена", message.answers[-1])
-        keyboard_texts = _keyboard_texts(message.reply_markups[-1])
+        self.assertIn("Связь с учеником найдена", finish_message.answers[-1])
+        self.assertIn("активное наблюдение", finish_message.answers[-1])
+        keyboard_texts = _keyboard_texts(finish_message.reply_markups[-1])
         self.assertIn("👨‍👩‍👧 Мои дети", keyboard_texts)
-        self.assertIn("✉️ Написать преподавателю", keyboard_texts)
-        self.assertIn("📁 Материалы", keyboard_texts)
-        self.assertIn("📞 Контакты", keyboard_texts)
-        self.assertIn("👤 Ещё", keyboard_texts)
-        self.assertNotIn("👤 Профиль", keyboard_texts)
+
+    async def test_parent_registration_trust_mode_persists_choice(self):
+        state = DummyState()
+        await state.update_data(role="parent", reg_total=6)
+        await process_full_name(DummyMessage("Мария Иванова", user_id=802), state)
+        await process_age(DummyMessage("35", user_id=802), state)
+        await process_child_name(DummyMessage("Иван Иванов", user_id=802), state)
+        await process_child_age(DummyMessage("10", user_id=802), state)
+
+        db = _make_parent_registration_db()
+        message = DummyMessage(user_id=802)
+        callback = DummyCallbackQuery(
+            "engagement:trust",
+            message=message,
+            user_id=802,
+        )
+        await process_engagement_mode_choice(callback, state, db)
+
+        self.assertEqual(db.conn.executed[0][1][-1], "trust")
+        self.assertIn("доверие преподавателю", message.answers[-1])
 
 
 class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
@@ -222,6 +269,16 @@ class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
                     }
                 ]
 
+            async def get_student_transactions(self, student_id, limit=15):
+                return [
+                    {
+                        "type": "payment_added",
+                        "amount_lessons": 4,
+                        "created_at": datetime(2026, 4, 1),
+                        "payment_amount": 3000,
+                    }
+                ]
+
         db = FakeDB()
 
         schedule_message = DummyMessage(user_id=902, full_name="Мария Иванова")
@@ -285,6 +342,305 @@ class ParentCabinetFlowTest(unittest.IsolatedAsyncioTestCase):
         await process_parent_child_payments(payments_callback, db)
         self.assertIn("Оплата", payments_message.edits[-1])
         self.assertIn("3000", payments_message.edits[-1])
+
+
+class ParentEngagementModeTest(unittest.IsolatedAsyncioTestCase):
+    def _trust_db(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Мария Иванова",
+                    "role": "parent",
+                    "is_active": True,
+                    "engagement_mode": "trust",
+                }
+
+            async def get_parent_child_link(self, parent_id, link_id):
+                return {
+                    "link_id": link_id,
+                    "student_id": 707,
+                    "child_label": "Анна Иванова",
+                    "link_status": "linked",
+                    "lesson_format": "online",
+                    "next_lesson_date": datetime(2026, 4, 8, 16, 0),
+                    "active_homework_count": 1,
+                    "lesson_balance": 2,
+                }
+
+        return FakeDB()
+
+    async def test_trust_mode_child_keyboard_hides_homework_and_study_plan(self):
+        db = self._trust_db()
+        message = DummyMessage(user_id=910, full_name="Мария Иванова")
+        callback = DummyCallbackQuery(
+            "parent:child:7",
+            message=message,
+            user_id=910,
+            full_name="Мария Иванова",
+        )
+        await process_parent_child_home(callback, db)
+
+        callback_datas = [
+            button.callback_data
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("parent:child:7:schedule", callback_datas)
+        self.assertIn("parent:child:7:payments", callback_datas)
+        self.assertNotIn("parent:child:7:homework:active", callback_datas)
+        self.assertNotIn("parent:child:7:study_plan", callback_datas)
+
+    async def test_trust_mode_homework_callback_blocked(self):
+        db = self._trust_db()
+        message = DummyMessage(user_id=910)
+        callback = DummyCallbackQuery(
+            "parent:child:7:homework:active",
+            message=message,
+            user_id=910,
+        )
+        await process_parent_child_homework(callback, db)
+        self.assertEqual(message.edits, [])
+        self.assertTrue(callback.answers)
+        self.assertIn("доверительный", callback.answers[-1].text)
+
+    async def test_trust_mode_study_plan_callback_blocked(self):
+        db = self._trust_db()
+        message = DummyMessage(user_id=910)
+        callback = DummyCallbackQuery(
+            "parent:child:7:study_plan",
+            message=message,
+            user_id=910,
+        )
+        await process_parent_child_study_plan(callback, db)
+        self.assertEqual(message.edits, [])
+        self.assertIn("доверительный", callback.answers[-1].text)
+
+    async def test_engagement_toggle_flips_mode_and_rerenders_profile(self):
+        class FakeDB:
+            def __init__(self):
+                self.mode = "active"
+                self.set_calls = []
+
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Мария Иванова",
+                    "role": "parent",
+                    "is_active": True,
+                    "engagement_mode": self.mode,
+                }
+
+            async def get_parent_children_overview(self, parent_id):
+                return []
+
+            async def set_parent_engagement_mode(self, parent_id, mode):
+                self.set_calls.append((parent_id, mode))
+                self.mode = mode
+                return mode
+
+        db = FakeDB()
+        message = DummyMessage(user_id=920, full_name="Мария Иванова")
+        callback = DummyCallbackQuery(
+            "parent:engagement:toggle",
+            message=message,
+            user_id=920,
+            full_name="Мария Иванова",
+        )
+        await process_parent_engagement_toggle(callback, db)
+
+        self.assertEqual(db.set_calls, [(920, "trust")])
+        keyboard_texts = _keyboard_texts(message.reply_markups[-1])
+        self.assertTrue(any("Режим: доверие" in t for t in keyboard_texts))
+
+
+class ParentSelfDeleteTest(unittest.IsolatedAsyncioTestCase):
+    async def test_parent_self_delete_uses_preserving_history(self):
+        from handlers.users.callbacks import process_self_delete_confirm
+
+        class FakeDB:
+            def __init__(self):
+                self.full_calls = []
+                self.preserving_calls = []
+
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Мария Иванова",
+                    "role": "parent",
+                    "is_active": True,
+                }
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+            async def delete_user_fully(self, telegram_id):
+                self.full_calls.append(telegram_id)
+
+            async def delete_parent_preserving_history(self, telegram_id):
+                self.preserving_calls.append(telegram_id)
+
+        db = FakeDB()
+        message = DummyMessage(user_id=931)
+        callback = DummyCallbackQuery(
+            "self_delete:confirm",
+            message=message,
+            user_id=931,
+        )
+        await process_self_delete_confirm(callback, db)
+        self.assertEqual(db.preserving_calls, [931])
+        self.assertEqual(db.full_calls, [])
+
+    async def test_parent_self_delete_warning_uses_parent_snapshot(self):
+        from handlers.users.callbacks import process_profile_delete_me
+
+        class FakeDB:
+            def __init__(self):
+                self.snapshot_called_with = None
+                self.user_snapshot_called = False
+
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Мария Иванова",
+                    "role": "parent",
+                    "is_active": True,
+                }
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+            async def get_parent_deletion_snapshot(self, telegram_id):
+                self.snapshot_called_with = telegram_id
+                return {"children_count": 2, "linked_children_count": 1, "payments_as_payer": 5}
+
+            async def get_user_deletion_snapshot(self, telegram_id):
+                self.user_snapshot_called = True
+                return {}
+
+        db = FakeDB()
+        message = DummyMessage(user_id=932)
+        callback = DummyCallbackQuery(
+            "profile:delete_me",
+            message=message,
+            user_id=932,
+        )
+        await process_profile_delete_me(callback, db)
+        self.assertEqual(db.snapshot_called_with, 932)
+        self.assertFalse(db.user_snapshot_called)
+        self.assertIn("Связей с учениками", message.edits[-1])
+        self.assertIn("<b>2</b>", message.edits[-1])
+
+
+class ParentBlockedStudentCallbacksTest(unittest.IsolatedAsyncioTestCase):
+    async def test_parent_blocked_from_schedule_callback(self):
+        from handlers.users.callbacks import process_menu_choice
+
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "role": "parent", "is_active": True}
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+        db = FakeDB()
+        message = DummyMessage(user_id=940)
+        callback = DummyCallbackQuery("schedule", message=message, user_id=940)
+        await process_menu_choice(callback, db)
+        self.assertEqual(message.edits, [])
+        self.assertIn("ученикам", callback.answers[-1].text)
+
+    async def test_parent_blocked_from_homework_root_callback(self):
+        from handlers.users.callbacks import process_homework
+
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "role": "parent", "is_active": True}
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+        db = FakeDB()
+        message = DummyMessage(user_id=941)
+        callback = DummyCallbackQuery("homework", message=message, user_id=941)
+        await process_homework(callback, db)
+        self.assertEqual(message.edits, [])
+        self.assertIn("ученикам", callback.answers[-1].text)
+
+
+class ParentMaterialsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_parent_materials_loads_global_resources_not_personal(self):
+        from handlers.users.callbacks import process_materials
+
+        class FakeDB:
+            def __init__(self):
+                self.student_resource_calls = []
+                self.global_called = False
+
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "role": "parent", "is_active": True}
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+            async def list_student_resources(self, owner_id):
+                self.student_resource_calls.append(owner_id)
+                return []
+
+            async def list_global_resources(self):
+                self.global_called = True
+                return [{"id": 1, "label": "Общие материалы", "url": "https://example.com", "provider": None, "is_primary": False, "sort_order": 0, "student_id": None}]
+
+        db = FakeDB()
+        message = DummyMessage(user_id=950)
+        callback = DummyCallbackQuery("materials", message=message, user_id=950)
+        await process_materials(callback, db)
+        self.assertTrue(db.global_called)
+        self.assertEqual(db.student_resource_calls, [])
+
+
+class ParentReplyPaymentChildContextTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_payment_with_child_link_id_includes_child_name_in_context(self):
+        from handlers.users.callbacks import start_student_reply
+
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"telegram_id": telegram_id, "role": "parent", "is_active": True}
+
+            async def get_admin_preview_session(self, admin_id):
+                return None
+
+            async def get_parent_child_link(self, parent_id, link_id):
+                return {
+                    "link_id": link_id,
+                    "child_label": "Анна Иванова",
+                    "student_id": 707,
+                    "link_status": "linked",
+                }
+
+        db = FakeDB()
+        state = DummyState()
+        message = DummyMessage(user_id=960)
+        callback = DummyCallbackQuery(
+            "reply:payment:child:7",
+            message=message,
+            user_id=960,
+        )
+
+        from data import config as data_config
+
+        original_admin_id = getattr(data_config, "ADMIN_ID", None)
+        data_config.ADMIN_ID = 1
+        try:
+            await start_student_reply(callback, state, db)
+        finally:
+            data_config.ADMIN_ID = original_admin_id
+
+        data = await state.get_data()
+        self.assertIn("по оплате за", data.get("reply_context_label", ""))
+        self.assertIn("Анна Иванова", data.get("reply_context_label", ""))
+        self.assertEqual(data.get("reply_child_link_id"), 7)
 
 
 class ParentTrafficLightTest(unittest.TestCase):

@@ -7,7 +7,7 @@ Handles:
   admin:today:unpaid    — students with zero balance (send requisites)
   admin:today:missing_hw — students missing homework before tomorrow's lesson
   admin:cat:education:lessons  — sub-screen for lesson actions
-  admin:cat:education:payments — sub-screen for payment actions
+  admin:finance:payments       — sub-screen for payment actions
   admin:cat:education:homework — sub-screen for homework actions
 """
 
@@ -192,8 +192,8 @@ async def admin_education_lessons(callback_query: types.CallbackQuery):
     await callback_query.answer()
 
 
-@router.callback_query(lambda c: c.data == "admin:cat:education:payments", StateFilter("*"))
-async def admin_education_payments(callback_query: types.CallbackQuery):
+@router.callback_query(lambda c: c.data == "admin:finance:payments", StateFilter("*"))
+async def admin_finance_payments(callback_query: types.CallbackQuery):
     if not _is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
@@ -204,8 +204,8 @@ async def admin_education_payments(callback_query: types.CallbackQuery):
         return InlineKeyboardButton(text=text, callback_data=cb)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("💳 Добавить оплату", "admin:add_payment:education")],
-        [_btn("◀️ К учебному процессу", "admin:cat:education")],
+        [_btn("💳 Добавить оплату", "admin:add_payment:finance")],
+        [_btn("◀️ К финансам", "admin:finance")],
     ])
     await callback_query.message.edit_text(
         "💰 <b>Оплаты</b>\n\nВыберите действие:",

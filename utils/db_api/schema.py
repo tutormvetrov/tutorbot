@@ -442,6 +442,25 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_users_add_speech_style", exc)
             return
 
+    async def migrate_users_add_engagement_mode(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS engagement_mode TEXT DEFAULT 'active';",
+                execute=True,
+            )
+            await self.execute(
+                """
+                UPDATE users
+                SET engagement_mode = 'active'
+                WHERE role = 'parent'
+                  AND (engagement_mode IS NULL OR BTRIM(engagement_mode) = '')
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_engagement_mode", exc)
+            return
+
     async def migrate_users_add_lesson_followup_fields(self):
         try:
             for col, definition in [
@@ -1032,6 +1051,45 @@ class DatabaseSchemaMixin:
         except Exception:
             pass
 
+    async def migrate_pricing_rates_add_label(self):
+        """Add label column to lesson_pricing_rates for named tariff grid."""
+        try:
+            await self.execute(
+                "ALTER TABLE lesson_pricing_rates ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS pricing_rate_id INTEGER",
+                execute=True,
+            )
+            # Drop old unique constraint (group_size, duration_minutes) and replace with
+            # (group_size, duration_minutes, label) to allow multiple rates per format
+            await self.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'lesson_pricing_rates_group_size_duration_minutes_key'
+                    ) THEN
+                        ALTER TABLE lesson_pricing_rates
+                        DROP CONSTRAINT lesson_pricing_rates_group_size_duration_minutes_key;
+                    END IF;
+                END $$;
+                """,
+                execute=True,
+            )
+            await self.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS lesson_pricing_rates_label_idx
+                ON lesson_pricing_rates (label)
+                WHERE is_active = true AND label != '';
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_pricing_rates_add_label", exc)
+
     # ── Teacher Pulse migrations ─────────────────────────────────────────────
 
     async def create_table_homework_nudges(self):
@@ -1097,6 +1155,213 @@ class DatabaseSchemaMixin:
         except Exception as exc:
             self._log_migration_failure("migrate_users_add_touches_enabled", exc)
 
+    # ── Balance transactions & work rules ──────────────────────────────────────
+
+    async def create_table_balance_transactions(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS balance_transactions (
+                id SERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                type TEXT NOT NULL,
+                amount_lessons INTEGER NOT NULL,
+                payment_id INTEGER REFERENCES payments(id) ON DELETE SET NULL,
+                lesson_id INTEGER REFERENCES lessons(id) ON DELETE SET NULL,
+                note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+        await self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_balance_tx_student ON balance_transactions (student_id, created_at DESC);",
+            execute=True,
+        )
+
+    async def create_table_work_rules(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS work_rules (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                is_active BOOLEAN DEFAULT true,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """, execute=True)
+
+    async def migrate_balance_transactions(self):
+        try:
+            await self.create_table_balance_transactions()
+            existing = await self.execute(
+                "SELECT COUNT(*) FROM balance_transactions", fetchval=True,
+            )
+            if int(existing or 0) > 0:
+                return
+            await self.execute(
+                """
+                INSERT INTO balance_transactions (student_id, type, amount_lessons, payment_id, created_at)
+                SELECT student_id, 'payment_added', lessons_count, id, COALESCE(payment_date, created_at)
+                FROM payments
+                WHERE status = 'confirmed'
+                """,
+                execute=True,
+            )
+            await self.execute(
+                """
+                INSERT INTO balance_transactions (student_id, type, amount_lessons, lesson_id, created_at)
+                SELECT l.student_id, 'lesson_consumed', -1, l.id, COALESCE(l.lesson_date, l.created_at)
+                FROM lessons l
+                WHERE l.balance_consumed = true AND l.status = 'completed'
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_balance_transactions", exc)
+
+    async def migrate_work_rules(self):
+        try:
+            await self.create_table_work_rules()
+        except Exception as exc:
+            self._log_migration_failure("migrate_work_rules", exc)
+
+    async def migrate_lessons_add_no_show(self):
+        try:
+            await self.execute(
+                "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS is_no_show BOOLEAN DEFAULT false",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_lessons_add_no_show", exc)
+
+    async def migrate_users_add_rules_accepted(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS rules_accepted_at TIMESTAMP",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_rules_accepted", exc)
+
+    async def migrate_users_add_lessons_per_week(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS lessons_per_week INTEGER DEFAULT 1",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_lessons_per_week", exc)
+
+    async def migrate_users_add_student_type(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS student_type VARCHAR DEFAULT 'adult'",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_student_type", exc)
+
+    # ── Student progress & achievements ──────────────────────────────────────
+
+    async def create_table_student_achievements(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS student_achievements (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                achievement_key VARCHAR(50) NOT NULL,
+                unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                notified BOOLEAN NOT NULL DEFAULT FALSE,
+                UNIQUE(user_id, achievement_key)
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS student_achievements_user_idx
+            ON student_achievements (user_id);
+            """,
+            execute=True,
+        )
+
+    async def create_table_lesson_feedback(self):
+        await self.execute("""
+            CREATE TABLE IF NOT EXISTS lesson_feedback (
+                id SERIAL PRIMARY KEY,
+                lesson_id INTEGER NOT NULL REFERENCES lessons(id),
+                user_id BIGINT NOT NULL REFERENCES users(telegram_id),
+                rating VARCHAR(10) NOT NULL CHECK (rating IN ('great', 'ok', 'hard')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(lesson_id, user_id)
+            );
+        """, execute=True)
+        await self.execute(
+            """
+            CREATE INDEX IF NOT EXISTS lesson_feedback_user_idx
+            ON lesson_feedback (user_id, created_at DESC);
+            """,
+            execute=True,
+        )
+
+    async def migrate_student_achievements(self):
+        try:
+            await self.create_table_student_achievements()
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_achievements", exc)
+
+    async def migrate_lesson_feedback(self):
+        try:
+            await self.create_table_lesson_feedback()
+        except Exception as exc:
+            self._log_migration_failure("migrate_lesson_feedback", exc)
+
+    async def migrate_student_touches_add_template_index(self):
+        try:
+            await self.execute(
+                "ALTER TABLE student_touches ADD COLUMN IF NOT EXISTS template_index SMALLINT",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_touches_add_template_index", exc)
+
+    async def migrate_lessons_add_feedback_sent(self):
+        try:
+            await self.execute(
+                "ALTER TABLE lessons ADD COLUMN IF NOT EXISTS feedback_request_sent BOOLEAN DEFAULT false",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_lessons_add_feedback_sent", exc)
+
+    async def migrate_student_parent_index(self):
+        try:
+            await self.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_student_parent_student_active
+                ON student_parent (student_id, is_active)
+                """,
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_student_parent_index", exc)
+
+    async def migrate_users_add_preferred_name(self):
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_name TEXT",
+                execute=True,
+            )
+            rows = await self.execute(
+                "SELECT telegram_id, full_name FROM users "
+                "WHERE preferred_name IS NULL AND full_name IS NOT NULL",
+                fetch=True,
+            )
+            from utils.text_utils import derive_preferred_name
+            for row in rows or []:
+                preferred = derive_preferred_name(row["full_name"])
+                if preferred:
+                    await self.execute(
+                        "UPDATE users SET preferred_name = $2 WHERE telegram_id = $1",
+                        row["telegram_id"], preferred, execute=True,
+                    )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_preferred_name", exc)
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -1122,6 +1387,8 @@ class DatabaseSchemaMixin:
                 "lessons_completed_count",
                 "student_stage_override",
                 "touches_enabled",
+                "engagement_mode",
+                "preferred_name",
             },
             "lessons": {
                 "lesson_date",
@@ -1133,6 +1400,7 @@ class DatabaseSchemaMixin:
                 "teacher_pre_lesson_note_sent",
                 "teacher_comment",
                 "teacher_comment_saved_at",
+                "feedback_request_sent",
             },
             "homework": {
                 "reminder_sent",
@@ -1231,6 +1499,7 @@ class DatabaseSchemaMixin:
                 "amount",
                 "currency",
                 "is_active",
+                "label",
                 "created_at",
                 "updated_at",
             },
@@ -1282,6 +1551,21 @@ class DatabaseSchemaMixin:
                 "context_source",
                 "context_snippet",
                 "sent_at",
+                "template_index",
+            },
+            "student_achievements": {
+                "id",
+                "user_id",
+                "achievement_key",
+                "unlocked_at",
+                "notified",
+            },
+            "lesson_feedback": {
+                "id",
+                "lesson_id",
+                "user_id",
+                "rating",
+                "created_at",
             },
         }
 
@@ -1329,6 +1613,7 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_language_level()
         await self.migrate_users_add_lesson_format()
         await self.migrate_users_add_speech_style()
+        await self.migrate_users_add_engagement_mode()
         await self.migrate_users_add_lesson_followup_fields()
         await self.migrate_internal_test_accounts()
         await self.migrate_lessons_add_balance_consumed()
@@ -1351,7 +1636,20 @@ class DatabaseSchemaMixin:
         await self.migrate_pair_shared_goal()
         await self.migrate_student_stage()
         await self.migrate_users_add_tariff_text()
+        await self.migrate_pricing_rates_add_label()
         await self.migrate_homework_nudges()
         await self.migrate_student_touches()
         await self.migrate_users_add_touches_enabled()
+        await self.migrate_balance_transactions()
+        await self.migrate_work_rules()
+        await self.migrate_lessons_add_no_show()
+        await self.migrate_users_add_rules_accepted()
+        await self.migrate_users_add_lessons_per_week()
+        await self.migrate_users_add_student_type()
+        await self.migrate_student_achievements()
+        await self.migrate_lesson_feedback()
+        await self.migrate_student_touches_add_template_index()
+        await self.migrate_lessons_add_feedback_sent()
+        await self.migrate_student_parent_index()
+        await self.migrate_users_add_preferred_name()
         await self.verify_required_schema()

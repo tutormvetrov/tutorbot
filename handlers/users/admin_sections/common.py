@@ -8,7 +8,7 @@ from utils.speech import choose_form
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == config.ADMIN_ID
+    return bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
 
 
 def q(value) -> str:
@@ -55,6 +55,20 @@ def extract_homework_payload(message: types.Message) -> dict | None:
         "description": description,
         "attachment": attachment,
     }
+
+
+def parse_admin_callback(data: str, expected_min_parts: int) -> list[str]:
+    """Сплитит callback по ':' и валидирует минимальную длину.
+
+    При недостатке частей — поднимает ValueError с понятным сообщением.
+    Используется в обработчиках admin:* для устойчивости к опечаткам в шаблонах.
+    """
+    parts = data.split(":")
+    if len(parts) < expected_min_parts:
+        raise ValueError(
+            f"callback {data!r}: ожидалось ≥{expected_min_parts} частей, получено {len(parts)}"
+        )
+    return parts
 
 
 def parse_admin_student_picker_callback_data(callback_data: str) -> tuple[str, int, int]:
@@ -198,6 +212,12 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         from handlers.users.admin import render_admin_home
 
         await render_admin_home(target, db)
+        return True
+
+    if view == "admin:finance":
+        from handlers.users.admin_sections.finance import render_admin_finance
+
+        await render_admin_finance(target, db)
         return True
 
     if view.startswith("admin:cat:"):

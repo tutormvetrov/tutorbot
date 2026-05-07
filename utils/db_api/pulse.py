@@ -147,18 +147,22 @@ class DatabasePulseMixin:
         template_key: str | None,
         context_source: str,
         context_snippet: str | None,
+        template_index: int | None = None,
     ) -> None:
         """Record a sent touch for dedup/rate-limiting."""
         await self.execute(
             """
-            INSERT INTO student_touches (student_id, template_type, template_key, context_source, context_snippet)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO student_touches
+                (student_id, template_type, template_key, context_source,
+                 context_snippet, template_index)
+            VALUES ($1, $2, $3, $4, $5, $6)
             """,
             student_id,
             template_type,
             template_key,
             context_source,
             context_snippet,
+            template_index,
             execute=True,
         )
 
@@ -166,13 +170,35 @@ class DatabasePulseMixin:
         """Touches sent to a student since a given datetime."""
         return await self.execute(
             """
-            SELECT id, template_type, template_key, sent_at
+            SELECT id, template_type, template_key, template_index, sent_at
             FROM student_touches
             WHERE student_id = $1 AND sent_at >= $2
             ORDER BY sent_at DESC
             """,
             student_id,
             since,
+            fetch=True,
+        )
+
+    async def get_last_touches(self, limit: int = 20) -> list:
+        """Latest touches across all students for the admin audit panel."""
+        return await self.execute(
+            """
+            SELECT t.id,
+                   t.student_id,
+                   u.full_name,
+                   u.preferred_name,
+                   t.template_type,
+                   t.template_index,
+                   t.context_source,
+                   t.context_snippet,
+                   t.sent_at
+            FROM student_touches t
+            LEFT JOIN users u ON u.telegram_id = t.student_id
+            ORDER BY t.sent_at DESC
+            LIMIT $1
+            """,
+            limit,
             fetch=True,
         )
 
@@ -220,9 +246,8 @@ class DatabasePulseMixin:
             ),
             balances AS (
                 SELECT student_id,
-                       COALESCE(SUM(lessons_remaining), 0) AS balance
-                FROM payments
-                WHERE status = 'confirmed'
+                       COALESCE(SUM(amount_lessons), 0) AS balance
+                FROM balance_transactions
                 GROUP BY student_id
             ),
             open_nudges AS (
@@ -296,6 +321,7 @@ class DatabasePulseMixin:
             WITH student_base AS (
                 SELECT u.telegram_id,
                        u.full_name,
+                       u.preferred_name,
                        u.speech_style,
                        u.goal_text,
                        u.touches_enabled,
@@ -346,6 +372,7 @@ class DatabasePulseMixin:
             )
             SELECT sb.telegram_id,
                    sb.full_name,
+                   sb.preferred_name,
                    sb.speech_style,
                    sb.goal_text,
                    sb.is_pair,

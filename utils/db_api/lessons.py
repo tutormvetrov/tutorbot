@@ -361,9 +361,9 @@ class DatabaseLessonMixin:
     async def get_student_lesson_balance(self, student_id: int) -> int:
         result = await self.execute(
             """
-            SELECT COALESCE(SUM(lessons_remaining), 0)
-            FROM payments
-            WHERE student_id = $1 AND status = 'confirmed'
+            SELECT COALESCE(SUM(amount_lessons), 0)
+            FROM balance_transactions
+            WHERE student_id = $1
             """,
             student_id, fetchval=True,
         )
@@ -397,22 +397,14 @@ class DatabaseLessonMixin:
                     """,
                     lesson_id,
                 )
-                payment = await conn.fetchrow(
+                await conn.execute(
                     """
-                    SELECT id FROM payments
-                    WHERE student_id = $1
-                      AND status = 'confirmed'
-                      AND lessons_remaining > 0
-                    ORDER BY created_at ASC
-                    LIMIT 1
+                    INSERT INTO balance_transactions
+                        (student_id, type, amount_lessons, lesson_id)
+                    VALUES ($1, 'lesson_consumed', -1, $2)
                     """,
-                    student_id,
+                    student_id, lesson_id,
                 )
-                if payment:
-                    await conn.execute(
-                        "UPDATE payments SET lessons_remaining = lessons_remaining - 1 WHERE id = $1",
-                        payment['id'],
-                    )
                 lesson_date = lesson["lesson_date"] if lesson else None
                 await conn.execute(
                     """
@@ -427,6 +419,26 @@ class DatabaseLessonMixin:
                     """,
                     student_id,
                     lesson_date,
+                )
+
+    async def mark_lesson_no_show(self, lesson_id: int, student_id: int):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE lessons
+                    SET status = 'completed', balance_consumed = true, is_no_show = true
+                    WHERE id = $1
+                    """,
+                    lesson_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO balance_transactions
+                        (student_id, type, amount_lessons, lesson_id, note)
+                    VALUES ($1, 'no_show', -1, $2, 'прогул')
+                    """,
+                    student_id, lesson_id,
                 )
 
     async def delete_lesson(self, lesson_id: int):

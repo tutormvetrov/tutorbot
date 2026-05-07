@@ -52,13 +52,6 @@ class DatabaseJourneyMixin:
             execute=True,
         )
 
-    async def get_goal_text(self, user_id: int) -> str | None:
-        return await self.execute(
-            "SELECT goal_text FROM users WHERE telegram_id = $1",
-            user_id,
-            fetchval=True,
-        )
-
     async def create_initial_journey(
         self,
         user_id: int,
@@ -133,28 +126,6 @@ class DatabaseJourneyMixin:
             user_id,
             JOURNEY_KIND_WEEKLY_CHECKIN,
             next_at,
-            execute=True,
-        )
-
-    async def reschedule_first_lesson_feedback(
-        self,
-        user_id: int,
-        first_lesson_completed_at: datetime,
-    ) -> None:
-        """Move feedback_after_first to ~24h after the first completed lesson."""
-        target = first_lesson_completed_at + timedelta(hours=24)
-        await self.execute(
-            """
-            UPDATE user_journey_events
-            SET scheduled_at = $2
-            WHERE user_id = $1
-              AND kind = $3
-              AND sent_at IS NULL
-              AND dismissed_at IS NULL
-            """,
-            user_id,
-            target,
-            JOURNEY_KIND_FEEDBACK_AFTER_FIRST,
             execute=True,
         )
 
@@ -240,18 +211,6 @@ class DatabaseJourneyMixin:
             return int((result or "UPDATE 0").split()[-1]) > 0
         except Exception:
             return False
-
-    async def get_pair_goal(self, pair_id: int) -> dict | None:
-        row = await self.execute(
-            """
-            SELECT id, shared_goal_text, shared_goal_set_at, shared_goal_due_date
-            FROM student_groups
-            WHERE id = $1
-            """,
-            pair_id,
-            fetchrow=True,
-        )
-        return dict(row) if row else None
 
     async def get_pair_progress(self, pair_id: int, *, since: datetime | None = None) -> dict:
         """Aggregate basic pair stats since `since` (defaults to last 7 days).

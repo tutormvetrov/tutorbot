@@ -439,7 +439,9 @@ def build_profile_text(
     return "\n".join(lines)
 
 
-def build_payment_text(balance: int, payments: list) -> str:
+def build_payment_text(balance: int, payments: list, transactions: list | None = None) -> str:
+    if transactions is not None:
+        return build_transaction_history_text(balance, transactions)
     lines = [
         "💰 <b>Оплата</b>",
         "",
@@ -466,7 +468,6 @@ def build_payment_text(balance: int, payments: list) -> str:
             "",
             f"{index}. <b>{int(payment['amount'])} ₽</b> · {payment['lessons_count']} ур.",
             f"   📅 {date_str}",
-            f"   🎓 Остаток по этой оплате: {lesson_balance_label(payment.get('lessons_remaining'))}",
         ])
     return "\n".join(lines)
 
@@ -627,11 +628,44 @@ def build_pricing_rates_text(rates: list) -> str:
         return "\n".join(lines)
     lines.append("")
     for rate in rates:
+        label = rate.get("label") or ""
+        label_part = f"<b>{html.quote(label)}</b> · " if label else ""
         lines.append(
-            f"• <b>{int(rate['group_size'])} уч.</b> · "
+            f"• {label_part}"
+            f"{int(rate['group_size'])} уч. · "
             f"{int(rate['duration_minutes'])} мин · "
             f"<b>{html.quote(money_label(rate['amount'], rate.get('currency')))}</b>"
         )
+    return "\n".join(lines)
+
+
+def format_tariff_display(rate) -> str:
+    """Format a pricing rate for display on student card."""
+    if not rate:
+        return "не назначен"
+    label = rate.get("label") or ""
+    amount = int(rate["amount"]) if float(rate["amount"]) == int(float(rate["amount"])) else rate["amount"]
+    currency = rate.get("currency") or "RUB"
+    duration = int(rate.get("duration_minutes") or 90)
+    if label:
+        return f"{label} ({amount} {currency} / {duration} мин)"
+    return f"{amount} {currency} / {duration} мин"
+
+
+def build_tariff_picker_text(student_name: str, rates: list, current_rate_id: int | None) -> str:
+    """Build text for the tariff assignment picker screen."""
+    lines = [f"💳 <b>Тариф для {student_name}</b>"]
+    current_label = "не назначен"
+    if current_rate_id:
+        for rate in rates:
+            if rate.get("id") == current_rate_id:
+                current_label = format_tariff_display(rate)
+                break
+    lines.append(f"\nТекущий: <b>{html.quote(current_label)}</b>")
+    if rates:
+        lines.append("\nВыберите тариф из списка:")
+    else:
+        lines.append("\nТарифов пока нет. Добавьте через раздел «Тарифы» в настройках.")
     return "\n".join(lines)
 
 
@@ -969,16 +1003,24 @@ def build_first_lesson_payment_invite_text(
         if student_name
         else "💛 <b>Спасибо за первый урок!</b>"
     )
-    tariff_line = f"\n💳 Тариф: {html.quote(tariff_text)}\n" if tariff_text else ""
+    # Auto-derive tariff label from pricing_rate if no explicit tariff_text
+    effective_tariff = tariff_text
+    if not effective_tariff and pricing_context:
+        rate = pricing_context.get("rate")
+        if rate and rate.get("label"):
+            effective_tariff = format_tariff_display(rate)
+    tariff_line = f"\n💳 Тариф: {html.quote(effective_tariff)}\n" if effective_tariff else ""
     next_step = choose_form(
         speech_style,
         "Когда будет удобно, оплатите ближайшую неделю занятий — расписание и темп тогда сохранятся без пауз.",
         "Когда будет удобно, оплати ближайшую неделю занятий — расписание и темп тогда сохранятся без пауз.",
+        "Когда будет удобно, оплати неделю занятий — тогда всё будет без пауз 💪",
     )
     confirm = choose_form(
         speech_style,
         "После перевода нажмите <b>«Сообщить об оплате»</b>, и я её отмечу.",
         "После перевода нажми <b>«Сообщить об оплате»</b>, и я её отмечу.",
+        "После перевода нажми <b>«Сообщить об оплате»</b> — и готово! 🚀",
     )
     return (
         f"{intro}"
@@ -1003,7 +1045,13 @@ def build_first_lesson_payment_invite_text_for_parent(
         if child_name
         else "💛 <b>Первый урок завершён!</b>"
     )
-    tariff_line = f"\n💳 Тариф: {html.quote(tariff_text)}" if tariff_text else ""
+    # Auto-derive tariff label from pricing_rate if no explicit tariff_text
+    effective_tariff = tariff_text
+    if not effective_tariff and pricing_context:
+        rate = pricing_context.get("rate")
+        if rate and rate.get("label"):
+            effective_tariff = format_tariff_display(rate)
+    tariff_line = f"\n💳 Тариф: {html.quote(effective_tariff)}" if effective_tariff else ""
     return (
         f"{greeting}\n"
         f"{tariff_line}\n\n"
@@ -1148,7 +1196,7 @@ def build_parent_home_text(parent_name: str, children: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_parent_child_hub_text(child: dict) -> str:
+def build_parent_child_hub_text(child: dict, engagement_mode: str = "active") -> str:
     status = child.get("link_status")
     lines = [
         f"👧 <b>{html.quote(child.get('child_label') or 'Ребёнок')}</b>",
@@ -1164,12 +1212,45 @@ def build_parent_child_hub_text(child: dict) -> str:
     lines.extend([
         f"{lesson_format_icon(child.get('lesson_format'))} Формат: <b>{lesson_format_label(child.get('lesson_format'))}</b>",
         f"📅 Ближайший урок: <b>{html.quote(format_datetime(child.get('next_lesson_date')) if child.get('next_lesson_date') else 'не назначен')}</b>",
-        f"📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>",
-        f"🎓 Баланс уроков: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
-        "",
-        "",
     ])
+    if engagement_mode != "trust":
+        lines.append(f"📚 Активные ДЗ: <b>{int(child.get('active_homework_count') or 0)}</b>")
+    lines.extend([
+        f"🎓 Баланс уроков: <b>{lesson_balance_label(child.get('lesson_balance'))}</b>",
+    ])
+    if engagement_mode == "trust":
+        lines.extend([
+            "",
+            "🌿 <i>Доверительный режим: учёбу контролирует ребёнок и преподаватель. Вы видите расписание и оплаты.</i>",
+        ])
+    lines.extend(["", ""])
     return "\n".join(lines)
+
+
+def build_engagement_mode_intro_text(child_name: str) -> str:
+    return (
+        "🤝 <b>Как вам удобнее быть рядом с учёбой ребёнка?</b>\n\n"
+        f"Это последний шаг регистрации для <b>{html.quote(child_name)}</b>.\n\n"
+        "🎯 <b>Хочу быть в курсе</b> — кабинет покажет расписание, домашку, учебный план и оплаты. "
+        "Подходит, если важно держать руку на пульсе.\n\n"
+        "🌿 <b>Доверяю преподавателю</b> — кабинет покажет только расписание и оплаты, без домашки и плана. "
+        "Учёбу контролирует ребёнок и преподаватель.\n\n"
+        "Этот выбор можно поменять в любой момент в <b>«Ещё → Профиль»</b>."
+    )
+
+
+def build_engagement_mode_switched_text(mode: str) -> str:
+    if mode == "trust":
+        return (
+            "🌿 <b>Режим: доверие преподавателю</b>\n\n"
+            "В кабинете ребёнка теперь показываются только расписание и оплаты. "
+            "Домашка и учебный план скрыты — за ними следит ребёнок и преподаватель."
+        )
+    return (
+        "🎯 <b>Режим: активное наблюдение</b>\n\n"
+        "В кабинете ребёнка снова доступны учебный план и домашка. "
+        "Вы видите всё, что относится к учёбе."
+    )
 
 
 def build_requisites_text(req: dict, pricing_context: dict | None = None) -> str:
@@ -1788,6 +1869,8 @@ def build_admin_student_card_text(
     next_lesson: datetime | None,
     pair: dict | None = None,
     tariff_text: str | None = None,
+    pricing_rate=None,
+    progress_block: str | None = None,
 ) -> str:
     reminders = reminder_status_label(student.get("lesson_reminders"))
     first_dt = student.get("cached_first_lesson_date") or student.get("first_lesson_date")
@@ -1796,18 +1879,26 @@ def build_admin_student_card_text(
     is_overridden = override and override in STUDENT_STAGES
     badge_suffix = " (вручную)" if is_overridden else ""
     completed = int(student.get("lessons_completed_count") or 0)
+    # Tariff display: prefer pricing_rate, fallback to tariff_text
+    if pricing_rate:
+        tariff_display = format_tariff_display(pricing_rate)
+    elif tariff_text:
+        tariff_display = tariff_text
+    else:
+        tariff_display = "не назначен"
     lines = [
         f"👤 <b>{html.quote(student['full_name'])}</b>",
         "",
         f"🏷 Стадия: <b>{badge}{badge_suffix}</b> · уроков: {completed}",
         f"{lesson_format_icon(student.get('lesson_format'))} Формат: <b>{lesson_format_label(student.get('lesson_format'))}</b>",
         f"🗣 Обращение: <b>{speech_style_label(student.get('speech_style'))}</b>",
+        f"{'🎒' if student.get('student_type') == 'schoolchild' else '🎓'} Тип: <b>{'Школьник' if student.get('student_type') == 'schoolchild' else 'Взрослый'}</b>",
         f"🌍 Язык: <b>{html.quote(student.get('language') or '—')}</b>",
         f"📘 Уровень: <b>{html.quote(student.get('level') or '—')}</b>",
         f"🎓 Баланс: <b>{lesson_balance_label(balance)}</b>",
         f"📅 Ближайший урок: <b>{html.quote(format_datetime(next_lesson) if next_lesson else 'не назначен')}</b>",
         f"⏱ Длительность урока: <b>{lesson_duration_label(student.get('lesson_duration_minutes'))}</b>",
-        f"💳 Тариф: <b>{html.quote(tariff_text) if tariff_text else '—'}</b>",
+        f"💳 Тариф: <b>{html.quote(tariff_display)}</b>",
         f"🔔 Напоминания: <b>{html.quote(reminders)}</b>",
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
     ]
@@ -1821,6 +1912,8 @@ def build_admin_student_card_text(
             f"👥 <b>Пара:</b> {html.quote(pair_label)}",
             "Операционно ведётся через этот профиль: общий баланс, один темп, одно ДЗ.",
         ])
+    if progress_block:
+        lines.extend(["", progress_block])
     return "\n".join(lines)
 
 
@@ -2123,6 +2216,12 @@ def build_admin_today_text(snapshot: dict, today_date) -> str:
             f"• {unanswered} {_plural(unanswered, 'ответ ученика', 'ответа учеников', 'ответов учеников')} за последние сутки"
         )
 
+    hard_feedback: list[dict] = snapshot.get("hard_feedback") or []
+    for fb in hard_feedback:
+        attention_items.append(
+            f"• 😕 Сложный урок: {html.quote(fb.get('full_name', '?'))} ({html.quote(fb.get('date', ''))})"
+        )
+
     if attention_items:
         lines.append("⚠️ <b>Внимание сегодня:</b>")
         lines.extend(attention_items)
@@ -2408,3 +2507,184 @@ def build_nudge_message(full_name: str, stage: int, hours_since: int) -> str:
         return f"⚠️ {full_name} ждёт домашку. Уже {hours_since}ч без ДЗ."
     else:
         return f"🔴 {full_name}: сутки без ДЗ после урока."
+
+
+# ── Balance transactions ────────────────────────────────────────────────────
+
+_TX_EMOJI = {
+    "payment_added": "💳",
+    "lesson_consumed": "📖",
+    "no_show": "⚠️",
+    "manual_adjustment": "🔧",
+    "admin_writeoff": "🔄",
+}
+
+_TX_LABEL = {
+    "payment_added": "Оплата",
+    "lesson_consumed": "Урок",
+    "no_show": "Прогул",
+    "manual_adjustment": "Корректировка",
+    "admin_writeoff": "Списание",
+}
+
+
+def build_transaction_history_text(balance: int, transactions: list) -> str:
+    lines = [
+        "💰 <b>Оплата</b>",
+        "",
+        f"Сейчас на балансе: <b>{lesson_balance_label(balance)}</b>",
+    ]
+    if not transactions:
+        lines.extend(["", "История пока пуста."])
+        return "\n".join(lines)
+
+    lines.extend(["", "📋 <b>История:</b>"])
+    running = balance
+    entries = []
+    for tx in transactions:
+        dt = tx.get("created_at")
+        date_str = dt.strftime("%d.%m") if dt else "—"
+        emoji = _TX_EMOJI.get(tx["type"], "•")
+        amount = int(tx["amount_lessons"])
+        sign = f"+{amount}" if amount > 0 else str(amount)
+        label = _TX_LABEL.get(tx["type"], tx["type"])
+        extra = ""
+        if tx["type"] == "payment_added" and tx.get("payment_amount"):
+            extra = f" ({int(tx['payment_amount'])} ₽)"
+        entries.append(f"  {date_str} {emoji} {label} {sign}{extra} (ост. {running})")
+        running -= amount
+
+    lines.extend(entries)
+    return "\n".join(lines)
+
+
+# ── Finance analytics ────────────────────────────────────────────────────────
+
+def build_finance_text(
+    income_week: float,
+    income_month: float,
+    discipline: list,
+    forecast_week: float,
+    forecast_month: float,
+    lost_pct: float,
+    tariff_stats: list,
+) -> str:
+    lines = ["💰 <b>Финансы</b>", ""]
+
+    lines.append("📈 <b>Доход</b>")
+    lines.append(f"  Эта неделя: <b>{int(income_week)} ₽</b>")
+    lines.append(f"  Этот месяц: <b>{int(income_month)} ₽</b>")
+    lines.append("")
+
+    overdue = [d for d in discipline if d["balance"] <= 0 and d.get("last_payment_at")]
+    on_time = len(discipline) - len(overdue)
+    lines.append("📋 <b>Дисциплина</b>")
+    lines.append(f"  ✅ Вовремя: {on_time}")
+    if overdue:
+        lines.append(f"  ⚠️ Задержка: {len(overdue)}")
+        from datetime import datetime
+        now = datetime.now()
+        for d in overdue:
+            days = (now - d["last_payment_at"]).days if d["last_payment_at"] else 0
+            lines.append(f"    — {d['full_name']} ({days} дн.)")
+    lines.append("")
+
+    lines.append("🔮 <b>Прогноз</b>")
+    lines.append(f"  Следующая неделя: ~{int(forecast_week)} ₽")
+    lines.append(f"  Следующий месяц: ~{int(forecast_month)} ₽")
+    if lost_pct > 0:
+        lines.append(f"  Поправка на потери: -{lost_pct:.0f}%")
+    lines.append("")
+
+    if tariff_stats:
+        lines.append("📊 <b>Тарифы</b>")
+        for ts in tariff_stats:
+            label = ts.get("label") or f"{ts['group_size']}×{ts['duration_minutes']}"
+            count = int(ts["student_count"])
+            rate = int(ts["amount"])
+            monthly = rate * count * 4
+            lines.append(f"  {label} ({rate} ₽): {count} уч. → {monthly} ₽/мес")
+
+    return "\n".join(lines)
+
+
+def build_finance_briefing_block(income_week: float, overdue_names: list[str]) -> str:
+    lines = [f"💰 Доход за неделю: {int(income_week)} ₽"]
+    if overdue_names:
+        lines.append(f"⚠️ Ожидают оплаты: {', '.join(overdue_names)}")
+    return "\n".join(lines)
+
+
+# ── Work rules ────────────────────────────────────────────────────────────────
+
+def build_work_rules_text(rules: list) -> str:
+    if not rules:
+        return "📜 <b>Правила работы</b>\n\nПравила пока не добавлены."
+    lines = ["📜 <b>Правила работы</b>", ""]
+    for i, rule in enumerate(rules, 1):
+        lines.append(f"<b>{i}. {html.quote(rule['title'])}</b>")
+        lines.append(f"   {html.quote(rule['body'])}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_admin_work_rules_text(rules: list) -> str:
+    if not rules:
+        return "📜 <b>Правила работы</b>\n\nПравил пока нет. Добавьте первое правило."
+    lines = ["📜 <b>Правила работы</b>", ""]
+    for i, rule in enumerate(rules, 1):
+        lines.append(f"<b>{i}. {html.quote(rule['title'])}</b>")
+        lines.append(f"   {html.quote(rule['body'])}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_onboarding_rules_text(rules: list) -> str:
+    if not rules:
+        return ""
+    lines = [
+        "📜 <b>Правила работы</b>",
+        "",
+        "Перед началом занятий, ознакомьтесь с правилами:",
+        "",
+    ]
+    for i, rule in enumerate(rules, 1):
+        lines.append(f"<b>{i}. {html.quote(rule['title'])}</b>")
+        lines.append(f"   {html.quote(rule['body'])}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── No-show ───────────────────────────────────────────────────────────────────
+
+def build_no_show_confirm_text(lesson: dict, student_name: str, balance: int) -> str:
+    date_str = format_datetime(lesson.get("lesson_date")) if lesson.get("lesson_date") else "—"
+    new_balance = balance - 1
+    return "\n".join([
+        "⚠️ <b>Списать урок как прогул?</b>",
+        "",
+        f"👤 {html.quote(student_name)}",
+        f"📅 {html.quote(date_str)}",
+        "",
+        f"Баланс сейчас: {balance} → станет: {new_balance}",
+    ])
+
+
+def build_no_show_notification_text(lesson_date, balance: int) -> str:
+    date_str = format_datetime(lesson_date) if lesson_date else "—"
+    return "\n".join([
+        f"⚠️ Урок {html.quote(date_str)} списан по правилам (неявка).",
+        f"📊 Текущий баланс: {lesson_balance_label(balance)}.",
+    ])
+
+
+# ── Payment push ──────────────────────────────────────────────────────────────
+
+def build_payment_added_notification_text(amount: float, lessons: int, balance: int) -> str:
+    return "\n".join([
+        "✅ <b>Оплата принята!</b>",
+        "",
+        f"💰 Сумма: {int(amount)} ₽",
+        f"🎓 Уроков добавлено: {lessons}",
+        f"📊 Текущий баланс: {lesson_balance_label(balance)}",
+    ])

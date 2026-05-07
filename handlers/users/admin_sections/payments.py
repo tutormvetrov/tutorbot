@@ -1,5 +1,6 @@
 from aiogram import types
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
@@ -8,6 +9,8 @@ from keyboards.inline import (
     cancel_fsm_keyboard,
     make_admin_context_keyboard,
     make_back_button_keyboard,
+    make_payment_autoconfirm_keyboard,
+    make_balance_writeoff_confirm_keyboard,
     make_payment_delete_confirm_keyboard,
     make_payment_delete_keyboard,
     make_pricing_rates_keyboard,
@@ -22,12 +25,14 @@ from utils.ui_text import (
     ADMIN_ADD_PAYMENT_START_TEXT,
     ADMIN_NO_REGISTERED_STUDENTS_TEXT,
     build_admin_payments_text,
+    build_payment_added_notification_text,
     build_pricing_rates_text,
 )
 
 from handlers.users.admin_sections.common import (
     get_message_origin,
     is_admin,
+    parse_admin_callback,
     parse_admin_student_picker_callback_data,
     q,
     render_admin_student_picker,
@@ -37,24 +42,38 @@ from handlers.users.admin_sections.common import (
 router = Router()
 
 
-def _parse_rate_line(text: str) -> tuple[int, int, float, str] | None:
-    parts = (text or "").replace(",", ".").split()
-    if len(parts) < 3:
+def _parse_rate_line(text: str) -> tuple[str, int, int, float, str] | None:
+    """Parse rate line: 'Название group_size duration amount [currency]'
+
+    Examples:
+        Инд_старый 1 90 2500
+        Пара_120 2 120 4000 RUB
+    """
+    raw = (text or "").strip()
+    if not raw:
         return None
+    parts = raw.replace(",", ".").split()
+    if len(parts) < 4:
+        return None
+    label = parts[0].replace("_", " ")
     try:
-        group_size = int(parts[0])
-        duration = int(parts[1])
-        amount = float(parts[2])
+        group_size = int(parts[1])
+        duration = int(parts[2])
+        amount = float(parts[3])
     except ValueError:
         return None
-    currency = parts[3].upper() if len(parts) > 3 else "RUB"
+    currency = parts[4].upper() if len(parts) > 4 else "RUB"
     if group_size <= 0 or duration <= 0 or amount <= 0:
         return None
-    return group_size, duration, amount, currency
+    return label, group_size, duration, amount, currency
 
 
 def _return_view_from_source(source: str | None) -> str:
-    return "admin:cat:education" if source == "education" else "admin:home"
+    if source == "finance":
+        return "admin:finance"
+    if source == "education":
+        return "admin:cat:education"
+    return "admin:home"
 
 
 def _reply_markup_for_return_view(return_view: str | None, student_id: int | None = None):
@@ -65,6 +84,18 @@ def _reply_markup_for_return_view(return_view: str | None, student_id: int | Non
                 return make_admin_context_keyboard(student_id, int(parts[3]))
         return make_back_button_keyboard("◀️ Вернуться", return_view)
     return make_back_button_keyboard("◀️ Вернуться", return_view or "admin:home")
+
+
+def _extract_rate_amount(rate_obj) -> float:
+    """rate_obj может быть None, числом или asyncpg.Record/dict с полем amount."""
+    if rate_obj is None:
+        return 0.0
+    if isinstance(rate_obj, (int, float)):
+        return float(rate_obj)
+    try:
+        return float(rate_obj["amount"] or 0)
+    except (KeyError, TypeError):
+        return 0.0
 
 
 def _student_return_view(student_id: int, page: int | None, source: str) -> str | None:
@@ -83,16 +114,21 @@ async def _render_admin_payments(message: types.Message, db: Database, student_i
 
     await message.edit_text(
         build_admin_payments_text(name, balance, payments),
-        reply_markup=make_payment_delete_keyboard(student_id, payments, page=page, source=source),
+        reply_markup=make_payment_delete_keyboard(student_id, payments, page=page, source=source, balance=balance),
     )
 
 
 async def _render_pricing_rates(message: types.Message, db: Database):
     rates = list(await db.get_pricing_rates() or [])
-    await message.edit_text(
-        build_pricing_rates_text(rates),
-        reply_markup=make_pricing_rates_keyboard(rates),
-    )
+    try:
+        await message.edit_text(
+            build_pricing_rates_text(rates),
+            reply_markup=make_pricing_rates_keyboard(rates),
+        )
+    except TelegramBadRequest as exc:
+        # "message is not modified" — текст идентичен, ничего не делаем
+        if "not modified" not in str(exc):
+            raise
 
 
 @router.callback_query(lambda c: c.data == "admin:pricing")
@@ -114,9 +150,13 @@ async def admin_pricing_add_start(callback_query: types.CallbackQuery, state: FS
     await callback_query.message.edit_text(
         "💳 <b>Добавить или обновить тариф</b>\n\n"
         "Введите одной строкой:\n"
-        "<code>количество_учеников длительность_минут сумма валюта</code>\n\n"
-        "Например: <code>2 90 5000 RUB</code>\n"
-        "Цена считается за занятие целиком.",
+        "<code>Название кол_учеников длительность сумма [валюта]</code>\n\n"
+        "Примеры:\n"
+        "<code>Инд_старый 1 90 2500</code>\n"
+        "<code>Пара_90 2 90 3500</code>\n"
+        "<code>Инд_новый_120 1 120 3500 RUB</code>\n\n"
+        "Название пишите без пробелов (вместо пробела _).\n"
+        "Если тариф с таким названием уже есть, он будет обновлён.",
         reply_markup=cancel_fsm_keyboard,
     )
     await callback_query.answer()
@@ -131,19 +171,65 @@ async def admin_pricing_rate_entered(message: types.Message, state: FSMContext, 
     parsed = _parse_rate_line(message.text or "")
     if not parsed:
         await message.answer(
-            "⚠️ Не понял тариф. Пример: <code>2 90 5000 RUB</code>",
+            "⚠️ Не понял формат. Пример: <code>Инд_старый 1 90 2500</code>",
             reply_markup=cancel_fsm_keyboard,
         )
         return
-    group_size, duration, amount, currency = parsed
-    await db.upsert_pricing_rate(group_size, duration, amount, currency)
+    label, group_size, duration, amount, currency = parsed
+    await db.upsert_pricing_rate(group_size, duration, amount, currency, label=label)
     await state.clear()
     await message.answer(
         "✅ <b>Тариф сохранён</b>\n\n"
+        f"Название: <b>{label}</b>\n"
         f"Формат: <b>{group_size} уч. · {duration} мин</b>\n"
-        f"Цена за занятие: <b>{int(amount) if amount.is_integer() else amount} {currency}</b>",
+        f"Цена за занятие: <b>{int(amount) if amount == int(amount) else amount} {currency}</b>",
         reply_markup=make_back_button_keyboard("◀️ К тарифам", "admin:pricing"),
     )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:pricing:delete:"))
+async def admin_pricing_delete(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    try:
+        rate_id = int(parts[3])
+    except (IndexError, ValueError):
+        await callback_query.answer("Некорректный ID.", show_alert=True)
+        return
+    await db.delete_pricing_rate(rate_id)
+    await _render_pricing_rates(callback_query.message, db)
+    await callback_query.answer("Тариф удалён.")
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("lesson_followup:payment:"))
+async def lesson_followup_payment(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    parts = callback_query.data.split(":")
+    try:
+        student_id = int(parts[2])
+    except (IndexError, ValueError):
+        await callback_query.answer("Некорректный ID.", show_alert=True)
+        return
+
+    origin_chat_id, origin_message_id = get_message_origin(callback_query.message, callback_query.from_user.id)
+    await state.clear()
+    await state.update_data(
+        student_id=student_id,
+        admin_return_view=f"admin:student_card:{student_id}:0",
+        admin_origin_chat_id=origin_chat_id,
+        admin_origin_message_id=origin_message_id,
+    )
+    await state.set_state(AdminAddPayment.waiting_for_payment_amount)
+    await callback_query.message.edit_text(
+        ADMIN_ADD_PAYMENT_AMOUNT_PROMPT_TEXT,
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
 
 
 @router.callback_query(lambda c: c.data.startswith('admin:student_payments:'))
@@ -222,6 +308,63 @@ async def admin_payment_delete(callback_query: types.CallbackQuery, db: Database
     await callback_query.answer("Оплата удалена.")
 
 
+# ─── Balance write-off ───────────────────────────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:balance_writeoff_ask:"))
+async def admin_balance_writeoff_confirm(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    parts = parse_admin_callback(callback_query.data, 3)
+    student_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else None
+    source = parts[4] if len(parts) > 4 else "card"
+
+    balance = await db.get_student_lesson_balance(student_id)
+    if balance >= 0:
+        await callback_query.answer("Баланс не отрицательный.", show_alert=True)
+        return
+
+    student = await db.get_user(student_id)
+    name = q(student["full_name"]) if student else str(student_id)
+
+    await callback_query.message.edit_text(
+        f"🔄 <b>Обнулить баланс?</b>\n\n"
+        f"👤 Ученик: {name}\n"
+        f"📊 Текущий баланс: <b>{balance}</b>\n"
+        f"➡️ Будет добавлено: <b>+{abs(balance)}</b>\n"
+        f"📊 Баланс после: <b>0</b>\n\n"
+        "Будет создана запись «Списание задолженности».",
+        reply_markup=make_balance_writeoff_confirm_keyboard(student_id, page=page, source=source),
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:balance_writeoff_do:"))
+async def admin_balance_writeoff_execute(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+
+    parts = parse_admin_callback(callback_query.data, 3)
+    student_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else None
+    source = parts[4] if len(parts) > 4 else "card"
+
+    amount = await db.writeoff_negative_balance(
+        student_id=student_id,
+        note=f"Списание задолженности (admin {callback_query.from_user.id})",
+    )
+    if amount is None:
+        await callback_query.answer("Баланс уже не отрицательный.", show_alert=True)
+        await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
+        return
+
+    await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
+    await callback_query.answer(f"Баланс обнулён (+{amount}).")
+
+
 @router.callback_query(lambda c: c.data.startswith('admin:add_payment'))
 async def admin_add_payment_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not is_admin(callback_query.from_user.id):
@@ -298,7 +441,7 @@ async def admin_payment_student_selected(callback_query: types.CallbackQuery, st
 
 
 @router.message(StateFilter(AdminAddPayment.waiting_for_payment_amount))
-async def admin_payment_amount_entered(message: types.Message, state: FSMContext):
+async def admin_payment_amount_entered(message: types.Message, state: FSMContext, db: Database):
     try:
         amount = float((message.text or "").strip().replace(',', '.'))
         if amount <= 0:
@@ -311,11 +454,61 @@ async def admin_payment_amount_entered(message: types.Message, state: FSMContext
         return
 
     await state.update_data(amount=amount)
+    data = await state.get_data()
+    student_id = data.get("student_id")
+
+    pricing_ctx = await db.get_student_pricing_context(student_id) if student_id else None
+    rate = _extract_rate_amount(pricing_ctx.get("rate") if pricing_ctx else None)
+
+    if rate > 0 and amount % rate == 0:
+        lessons = int(amount / rate)
+        await message.answer(
+            f"💰 {int(amount)} ₽ ÷ {int(rate)} ₽/урок = <b>{lessons} уроков</b>\n\nВерно?",
+            reply_markup=make_payment_autoconfirm_keyboard(student_id, amount, lessons),
+        )
+        return
+
     await state.set_state(AdminAddPayment.waiting_for_payment_count)
     await message.answer(
         ADMIN_ADD_PAYMENT_COUNT_PROMPT_TEXT,
         reply_markup=cancel_fsm_keyboard,
     )
+
+
+async def _finalize_payment(bot, db: Database, state: FSMContext, message, student_id: int, amount: float, count: int):
+    await db.add_payment(student_id, amount, count)
+    balance = await db.get_student_lesson_balance(student_id)
+
+    student = await db.get_user(student_id)
+    student_name = q(student['full_name']) if student else str(student_id)
+
+    data = await state.get_data()
+    return_view = data.get("admin_return_view")
+    origin_chat_id = data.get("admin_origin_chat_id")
+    origin_message_id = data.get("admin_origin_message_id")
+
+    await state.clear()
+    await restore_admin_view(bot, db, origin_chat_id, origin_message_id, return_view)
+    await message.answer(
+        f"✅ <b>Оплата добавлена</b>\n\n"
+        f"👤 Ученик: {student_name}\n"
+        f"💰 Сумма: {int(amount)} ₽\n"
+        f"🎓 Уроков: {count}\n\n"
+        "Карточка и баланс уже обновлены.",
+        reply_markup=_reply_markup_for_return_view(return_view, student_id),
+    )
+
+    notify_id = student_id
+    parent = await db.get_active_parent_for_student(student_id)
+    if parent:
+        notify_id = parent["parent_id"]
+    try:
+        await bot.send_message(
+            notify_id,
+            build_payment_added_notification_text(amount, count, balance),
+        )
+    except Exception:
+        pass
 
 
 @router.message(StateFilter(AdminAddPayment.waiting_for_payment_count))
@@ -332,24 +525,34 @@ async def admin_payment_count_entered(message: types.Message, state: FSMContext,
         return
 
     data = await state.get_data()
-    student_id = data['student_id']
-    amount = data['amount']
-    return_view = data.get("admin_return_view")
-    origin_chat_id = data.get("admin_origin_chat_id")
-    origin_message_id = data.get("admin_origin_message_id")
+    await _finalize_payment(message.bot, db, state, message, data['student_id'], data['amount'], count)
 
-    await db.add_payment(student_id, amount, count)
 
-    student = await db.get_user(student_id)
-    student_name = q(student['full_name']) if student else str(student_id)
+@router.callback_query(lambda c: c.data and c.data.startswith("payment_auto:confirm:"))
+async def admin_payment_autoconfirm(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    student_id = int(parts[2])
+    amount = float(parts[3])
+    count = int(parts[4])
+    await _finalize_payment(callback_query.bot, db, state, callback_query.message, student_id, amount, count)
+    await callback_query.answer()
 
-    await state.clear()
-    await restore_admin_view(message.bot, db, origin_chat_id, origin_message_id, return_view)
-    await message.answer(
-        f"✅ <b>Оплата добавлена</b>\n\n"
-        f"👤 Ученик: {student_name}\n"
-        f"💰 Сумма: {int(amount)} ₽\n"
-        f"🎓 Уроков: {count}\n\n"
-        "Карточка и баланс уже обновлены.",
-        reply_markup=_reply_markup_for_return_view(return_view, student_id),
+
+@router.callback_query(lambda c: c.data and c.data.startswith("payment_auto:edit:"))
+async def admin_payment_auto_edit(callback_query: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    student_id = int(parts[2])
+    amount = float(parts[3])
+    await state.update_data(student_id=student_id, amount=amount)
+    await state.set_state(AdminAddPayment.waiting_for_payment_count)
+    await callback_query.message.edit_text(
+        ADMIN_ADD_PAYMENT_COUNT_PROMPT_TEXT,
+        reply_markup=cancel_fsm_keyboard,
     )
+    await callback_query.answer()

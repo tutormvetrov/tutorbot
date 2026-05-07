@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from data import config
+
+logger = logging.getLogger(__name__)
 
 
 _BOT_TOKEN_PLACEHOLDERS = {
@@ -108,7 +111,33 @@ def format_runtime_config_issues(issues: list[str]) -> str:
     return "\n".join(lines)
 
 
+def validate_teacher_info() -> None:
+    """Load teacher_info.json and warn about missing key fields.
+
+    This is a non-fatal check: the bot can operate without teacher_info.json,
+    but missing fields may cause incomplete responses to students.
+    """
+    info = config.load_teacher_info()
+    if not info:
+        logger.warning(
+            "teacher_info.json is missing or empty — teacher contact details will not be available."
+        )
+        return
+
+    contacts = info.get("contacts") or {}
+    if not str(contacts.get("phone") or "").strip():
+        logger.warning(
+            "teacher_info.json: contacts.phone is missing — phone number will not be shown."
+        )
+
+    if not info.get("requisites"):
+        logger.warning(
+            "teacher_info.json: requisites is missing — payment details will not be shown."
+        )
+
+
 def assert_runtime_config(mode: str = "runtime") -> None:
     issues = collect_runtime_config_issues(mode=mode)
     if issues:
         raise RuntimeError(format_runtime_config_issues(issues))
+    validate_teacher_info()

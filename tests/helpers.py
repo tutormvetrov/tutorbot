@@ -6,6 +6,9 @@ class DummyState:
         self.state = None
         self.data = {}
 
+    async def get_state(self):
+        return self.state.state if self.state else None
+
     async def set_state(self, state):
         self.state = state
 

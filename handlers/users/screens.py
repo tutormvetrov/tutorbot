@@ -3,8 +3,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from keyboards.inline import (
     back_to_menu_keyboard,
-    parent_profile_keyboard,
+    make_parent_profile_keyboard,
     profile_keyboard,
+    schoolchild_main_keyboard,
     student_main_keyboard,
     make_parent_home_keyboard,
 )
@@ -16,6 +17,7 @@ from utils.preview_mode import (
     is_synthetic_parent_preview,
 )
 from utils.ui_text import (
+    DEACTIVATED_ACCOUNT_TEXT,
     MAIN_MENU_TEXT,
     REGISTRATION_REQUIRED_TEXT,
     build_parent_home_text,
@@ -41,6 +43,9 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
     user = preview["user"] if preview else await db.get_user(effective_user_id)
     if not user:
         return apply_preview_to_payload(REGISTRATION_REQUIRED_TEXT, back_to_menu_keyboard, preview)
+
+    if user.get("is_active") is False:
+        return DEACTIVATED_ACCOUNT_TEXT, None
 
     if user.get("role") == "parent":
         if is_synthetic_parent_preview(preview):
@@ -100,12 +105,13 @@ async def get_user_home_payload(db: Database, actor_user_id: int) -> tuple[str, 
             rows.append([cta_btn])
         if pair:
             rows.append([InlineKeyboardButton(text="🎯 Наша цель", callback_data="pair_goal:open")])
+        base_keyboard = schoolchild_main_keyboard if user.get("student_type") == "schoolchild" else student_main_keyboard
         if rows:
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=rows + list(student_main_keyboard.inline_keyboard)
+                inline_keyboard=rows + list(base_keyboard.inline_keyboard)
             )
         else:
-            keyboard = student_main_keyboard
+            keyboard = base_keyboard
 
         return apply_preview_to_payload(home_text, keyboard, preview)
 
@@ -152,7 +158,7 @@ async def get_profile_payload(db: Database, actor_user_id: int) -> tuple[str, ob
     if user["role"] == "student":
         keyboard = profile_keyboard
     elif user["role"] == "parent":
-        keyboard = parent_profile_keyboard
+        keyboard = make_parent_profile_keyboard(user.get("engagement_mode") or "active")
     else:
         keyboard = back_to_menu_keyboard
     return apply_preview_to_payload(text, keyboard, preview)
