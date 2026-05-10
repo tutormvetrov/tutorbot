@@ -393,12 +393,25 @@ async def teacher_bookmark_reminder_job(bot, db: "Database"):
         write_runtime_event("teacher_bookmark_reminder", "ok", sent=0, checked=len(lessons))
         return
 
+    from keyboards.inline import make_pre_lesson_bookmark_keyboard
+    vk_call_url, google_meet_url = _get_online_lesson_links()
+
     for lesson in lessons:
         try:
+            # Кнопки со ссылками на звонок показываем только для онлайн-уроков —
+            # для очных встреч они смысла не имеют.
+            is_online = (lesson.get("lesson_format") or "online") != "offline"
+            reply_markup = None
+            if is_online:
+                reply_markup = make_pre_lesson_bookmark_keyboard(
+                    google_meet_url=google_meet_url,
+                    vk_call_url=vk_call_url,
+                )
             await asyncio.wait_for(
                 bot.send_message(
                     config.ADMIN_ID,
                     build_teacher_bookmark_reminder_text(lesson),
+                    reply_markup=reply_markup,
                 ),
                 timeout=LESSON_REMINDER_SEND_TIMEOUT_SECONDS,
             )

@@ -345,6 +345,26 @@ def make_contacts_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def make_pre_lesson_bookmark_keyboard(
+    *,
+    google_meet_url: str = "",
+    vk_call_url: str = "",
+) -> InlineKeyboardMarkup | None:
+    """Кнопки звонков для напоминания «📖 Закладка перед уроком».
+
+    Возвращает ``None``, если ни одна ссылка не задана — чтобы не цеплять
+    пустую клавиатуру к сообщению.
+    """
+    rows = []
+    if google_meet_url:
+        rows.append([_url_btn("📹 Открыть Google Meet", google_meet_url)])
+    if vk_call_url:
+        rows.append([_url_btn("📞 VK Звонок", vk_call_url)])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def make_schedule_keyboard(calendar_url: str = "") -> InlineKeyboardMarkup:
     rows = []
     if calendar_url:
