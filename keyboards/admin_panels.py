@@ -222,13 +222,29 @@ def make_admin_speech_styles_keyboard(students: list) -> InlineKeyboardMarkup:
 
 # ─── Admin payments ───────────────────────────────────────────────────────────
 
-def make_payment_delete_keyboard(student_id: int, payments: list, page: int | None = None, source: str = "card", balance: int = 0) -> InlineKeyboardMarkup:
+def make_payment_delete_keyboard(student_id: int, payments: list, page: int | None = None, source: str = "card", balance: int = 0, carry_over_until=None) -> InlineKeyboardMarkup:
     rows = []
-    if balance < 0:
+    # «🔄 Обнулить баланс» — если баланс ≠ 0 (и положительный, и отрицательный).
+    if balance != 0:
         writeoff_cb = f"admin:balance_writeoff_ask:{student_id}"
         if page is not None:
             writeoff_cb += f":{page}:{source}"
-        rows.append([_btn(f"🔄 Обнулить баланс ({balance})", writeoff_cb)])
+        rows.append([_btn(f"🔄 Обнулить баланс ({balance:+d})", writeoff_cb)])
+    # «🔁 Перенести на следующую неделю» / «↩️ Отменить перенос» — защита
+    # от ближайшего воскресного авто-обнуления.
+    if carry_over_until is None:
+        carry_cb = f"admin:carry_over_set:{student_id}"
+        if page is not None:
+            carry_cb += f":{page}:{source}"
+        rows.append([_btn("🔁 Перенести на следующую неделю", carry_cb)])
+    else:
+        carry_cb = f"admin:carry_over_clear:{student_id}"
+        if page is not None:
+            carry_cb += f":{page}:{source}"
+        rows.append([_btn(
+            f"↩️ Отменить перенос (до {carry_over_until.strftime('%d.%m')})",
+            carry_cb,
+        )])
     for i, payment in enumerate(payments, 1):
         date_str = payment["payment_date"].strftime("%d.%m.%Y") if payment.get("payment_date") else "—"
         callback = f"payment_delete_confirm:{student_id}:{payment['id']}"

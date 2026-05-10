@@ -309,6 +309,7 @@ class DatabaseHomeworkMixin:
               AND h.deadline >= NOW() + INTERVAL '20 hours'
               AND h.deadline <= NOW() + INTERVAL '28 hours'
               AND COALESCE(u.homework_exempt, false) = false
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
             """,
             fetch=True,
         )

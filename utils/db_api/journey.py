@@ -87,12 +87,15 @@ class DatabaseJourneyMixin:
     async def get_due_journey_events(self, *, limit: int = 50) -> list[dict]:
         rows = await self.execute(
             """
-            SELECT id, user_id, kind, scheduled_at, sent_at, dismissed_at, payload, created_at
-            FROM user_journey_events
-            WHERE sent_at IS NULL
-              AND dismissed_at IS NULL
-              AND scheduled_at <= now()
-            ORDER BY scheduled_at
+            SELECT e.id, e.user_id, e.kind, e.scheduled_at, e.sent_at,
+                   e.dismissed_at, e.payload, e.created_at
+            FROM user_journey_events e
+            JOIN users u ON u.telegram_id = e.user_id
+            WHERE e.sent_at IS NULL
+              AND e.dismissed_at IS NULL
+              AND e.scheduled_at <= now()
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
+            ORDER BY e.scheduled_at
             LIMIT $1
             """,
             limit,

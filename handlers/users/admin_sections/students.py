@@ -7,6 +7,7 @@ from handlers.users.admin_sections.students_pairs import router as _pairs_router
 from handlers.users.admin_sections.students_card import router as _card_router
 from handlers.users.admin_sections.students_settings import router as _settings_router
 from handlers.users.admin_sections.students_lifecycle import router as _lifecycle_router
+from handlers.users.admin_sections.students_freeze import router as _freeze_router
 
 # Явные реэкспорты для common.py и pulse.py (ленивые импорты)
 from handlers.users.admin_sections._students_helpers import (  # noqa: F401
@@ -87,3 +88,4 @@ router.include_router(_pairs_router)
 router.include_router(_card_router)
 router.include_router(_settings_router)
 router.include_router(_lifecycle_router)
+router.include_router(_freeze_router)

@@ -32,6 +32,7 @@ class DatabasePulseMixin:
               AND l.status IN ('active', 'completed')
               AND u.is_active = true
               AND COALESCE(u.homework_exempt, false) = false
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
               AND NOT EXISTS (
                   SELECT 1 FROM homework h
                   WHERE h.student_id = l.student_id
@@ -339,6 +340,7 @@ class DatabasePulseMixin:
                 WHERE u.role = 'student'
                   AND u.is_active = true
                   AND u.touches_enabled = true
+                  AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
             ),
             last_lesson_info AS (
                 SELECT l.student_id,

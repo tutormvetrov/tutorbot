@@ -107,14 +107,27 @@ def _student_return_view(student_id: int, page: int | None, source: str) -> str 
 
 
 async def _render_admin_payments(message: types.Message, db: Database, student_id: int, page: int | None = None, source: str = "card"):
+    from datetime import date as _date
     student = await db.get_user(student_id)
     name = q(student['full_name']) if student else str(student_id)
     payments = await db.get_payments_for_student(student_id, limit=20)
     balance = await db.get_student_lesson_balance(student_id)
+    carry_over_until = await db.get_carry_over_until(student_id)
+    # Флаг считается активным, только если дата в будущем — иначе пора показать
+    # «🔁 Перенести» снова, а не «↩️ Отменить».
+    carry_active = carry_over_until if (carry_over_until and carry_over_until >= _date.today()) else None
+
+    text = build_admin_payments_text(name, balance, payments)
+    if carry_active:
+        text += f"\n\n🔁 Защищён от авто-обнуления до {carry_active.strftime('%d.%m')}"
 
     await message.edit_text(
-        build_admin_payments_text(name, balance, payments),
-        reply_markup=make_payment_delete_keyboard(student_id, payments, page=page, source=source, balance=balance),
+        text,
+        reply_markup=make_payment_delete_keyboard(
+            student_id, payments,
+            page=page, source=source, balance=balance,
+            carry_over_until=carry_active,
+        ),
     )
 
 
@@ -322,20 +335,27 @@ async def admin_balance_writeoff_confirm(callback_query: types.CallbackQuery, db
     source = parts[4] if len(parts) > 4 else "card"
 
     balance = await db.get_student_lesson_balance(student_id)
-    if balance >= 0:
-        await callback_query.answer("Баланс не отрицательный.", show_alert=True)
+    if balance == 0:
+        await callback_query.answer("Баланс уже равен нулю.", show_alert=True)
         return
 
     student = await db.get_user(student_id)
     name = q(student["full_name"]) if student else str(student_id)
 
+    if balance < 0:
+        adjustment_label = f"+{abs(balance)}"
+        note_kind = "Списание задолженности"
+    else:
+        adjustment_label = f"-{balance}"
+        note_kind = "Обнуление положительного остатка"
+
     await callback_query.message.edit_text(
         f"🔄 <b>Обнулить баланс?</b>\n\n"
         f"👤 Ученик: {name}\n"
-        f"📊 Текущий баланс: <b>{balance}</b>\n"
-        f"➡️ Будет добавлено: <b>+{abs(balance)}</b>\n"
+        f"📊 Текущий баланс: <b>{balance:+d}</b>\n"
+        f"➡️ Будет добавлено: <b>{adjustment_label}</b>\n"
         f"📊 Баланс после: <b>0</b>\n\n"
-        "Будет создана запись «Списание задолженности».",
+        f"Будет создана запись «{note_kind}».",
         reply_markup=make_balance_writeoff_confirm_keyboard(student_id, page=page, source=source),
     )
     await callback_query.answer()
@@ -352,17 +372,60 @@ async def admin_balance_writeoff_execute(callback_query: types.CallbackQuery, db
     page = int(parts[3]) if len(parts) > 3 else None
     source = parts[4] if len(parts) > 4 else "card"
 
-    amount = await db.writeoff_negative_balance(
+    # Узнаём знак баланса до операции, чтобы корректно подписать транзакцию.
+    pre_balance = await db.get_student_lesson_balance(student_id)
+    if pre_balance == 0:
+        await callback_query.answer("Баланс уже равен нулю.", show_alert=True)
+        await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
+        return
+    note_kind = "Списание задолженности" if pre_balance < 0 else "Обнуление положительного остатка"
+
+    amount = await db.reset_balance_to_zero(
         student_id=student_id,
-        note=f"Списание задолженности (admin {callback_query.from_user.id})",
+        note=f"{note_kind} (admin {callback_query.from_user.id})",
     )
     if amount is None:
-        await callback_query.answer("Баланс уже не отрицательный.", show_alert=True)
+        await callback_query.answer("Баланс уже равен нулю.", show_alert=True)
         await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
         return
 
     await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
-    await callback_query.answer(f"Баланс обнулён (+{amount}).")
+    await callback_query.answer(f"Баланс обнулён ({amount:+d}).")
+
+
+# ─── Carry-over (перенос на следующую неделю) ────────────────────────────────
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:carry_over_set:"))
+async def admin_carry_over_set(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 3)
+    student_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else None
+    source = parts[4] if len(parts) > 4 else "card"
+
+    until = await db.mark_carry_over(student_id)
+    await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
+    await callback_query.answer(
+        f"🔁 Защищён от авто-обнуления до {until.strftime('%d.%m')}.",
+        show_alert=False,
+    )
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:carry_over_clear:"))
+async def admin_carry_over_clear(callback_query: types.CallbackQuery, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = parse_admin_callback(callback_query.data, 3)
+    student_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else None
+    source = parts[4] if len(parts) > 4 else "card"
+
+    await db.clear_carry_over(student_id)
+    await _render_admin_payments(callback_query.message, db, student_id, page=page, source=source)
+    await callback_query.answer("Перенос отменён.")
 
 
 @router.callback_query(lambda c: c.data.startswith('admin:add_payment'))

@@ -1,7 +1,13 @@
 import secrets
+from datetime import date, datetime, timedelta
 
 from data.config import normalize_person_name
 from utils.text_utils import extract_student_name
+
+
+# Sentinel-дата для бессрочной заморозки. Любой `frozen_until > NOW()` считается
+# активной заморозкой; этот sentinel выбран так, чтобы заведомо не наступить.
+FREEZE_FOREVER_SENTINEL = datetime(2100, 1, 1)
 
 
 class DatabaseUserMixin:
@@ -1041,6 +1047,7 @@ class DatabaseUserMixin:
               AND COALESCE(u.is_internal_account, false) = false
               AND u.review_sent = false
               AND l.lesson_date IS NOT NULL
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
             GROUP BY u.telegram_id, u.full_name, COALESCE(u.speech_style, 'formal')
             HAVING MIN(l.lesson_date) <= NOW() - INTERVAL '21 days'
             """,
@@ -1079,6 +1086,7 @@ class DatabaseUserMixin:
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
               AND COALESCE(u.first_lesson_invite_sent, false) = false
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
               AND first_lesson.lesson_date
                   + (COALESCE(u.lesson_duration_minutes, 90) * INTERVAL '1 minute')
                   <= NOW()
@@ -1120,6 +1128,7 @@ class DatabaseUserMixin:
             WHERE u.role = 'student'
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
             ORDER BY u.full_name
             """,
             fetch=True,
@@ -1416,6 +1425,7 @@ class DatabaseUserMixin:
               ON student.telegram_id = sp.student_id
              AND student.role = 'student'
              AND student.is_active = true
+             AND (student.frozen_until IS NULL OR student.frozen_until < NOW())
             WHERE sp.is_active = true
             ORDER BY parent.full_name, student.full_name
             """,
@@ -1423,3 +1433,118 @@ class DatabaseUserMixin:
             period_end,
             fetch=True,
         )
+
+    # ── Ручная заморозка ученика ───────────────────────────────────────────
+
+    async def freeze_student(self, telegram_id: int, until: datetime | None) -> None:
+        """Поставить ученика на паузу.
+
+        ``until=None`` — бессрочно (sentinel 2100-01-01).
+        ``until`` в прошлом или равно None считается «не заморожен» при чтении,
+        но мы всё равно сохраняем переданное значение как историю.
+        """
+        target = until if until is not None else FREEZE_FOREVER_SENTINEL
+        await self.execute(
+            "UPDATE users SET frozen_until = $2 WHERE telegram_id = $1",
+            telegram_id, target, execute=True,
+        )
+
+    async def unfreeze_student(self, telegram_id: int) -> None:
+        await self.execute(
+            "UPDATE users SET frozen_until = NULL WHERE telegram_id = $1",
+            telegram_id, execute=True,
+        )
+
+    async def get_freeze_until(self, telegram_id: int) -> datetime | None:
+        row = await self.execute(
+            "SELECT frozen_until FROM users WHERE telegram_id = $1",
+            telegram_id, fetchrow=True,
+        )
+        if not row:
+            return None
+        return row.get("frozen_until")
+
+    async def is_student_frozen(self, telegram_id: int) -> bool:
+        until = await self.get_freeze_until(telegram_id)
+        if until is None:
+            return False
+        return until > datetime.utcnow()
+
+    async def get_active_lessons_in_freeze_period(
+        self, telegram_id: int, until: datetime
+    ) -> list[dict]:
+        """Активные уроки ученика в периоде [сейчас .. until]."""
+        rows = await self.execute(
+            """
+            SELECT id, lesson_date
+            FROM lessons
+            WHERE student_id = $1
+              AND status = 'active'
+              AND lesson_date IS NOT NULL
+              AND lesson_date >= NOW()
+              AND lesson_date <= $2
+            ORDER BY lesson_date ASC
+            """,
+            telegram_id, until, fetch=True,
+        )
+        return list(rows or [])
+
+    async def freeze_active_lessons(self, telegram_id: int, until: datetime) -> int:
+        """Перевести `active`-уроки ученика в `frozen` в периоде заморозки.
+        Используется опционально из handler-а, когда админ согласился."""
+        result = await self.execute(
+            """
+            UPDATE lessons
+            SET status = 'frozen', freeze_reason = 'admin_freeze_student'
+            WHERE student_id = $1
+              AND status = 'active'
+              AND lesson_date IS NOT NULL
+              AND lesson_date >= NOW()
+              AND lesson_date <= $2
+            """,
+            telegram_id, until, execute=True,
+        )
+        # asyncpg возвращает строку 'UPDATE N' — извлекаем число; в тестовом
+        # in-memory-stub просто вернётся None.
+        if isinstance(result, str) and result.startswith("UPDATE "):
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+        return 0
+
+    # ── Перенос баланса на следующую неделю (carry-over) ────────────────────
+
+    @staticmethod
+    def _next_monday(today: date | None = None) -> date:
+        """Дата ближайшего понедельника (после сегодняшнего дня).
+        Используется как `carry_over_until` — защита действует ровно одну неделю,
+        а в воскресенье 21:59 ближайшего воскресенья ещё не наступил понедельник."""
+        today = today or date.today()
+        days_ahead = (7 - today.weekday()) % 7  # 0=пн
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)
+
+    async def mark_carry_over(self, telegram_id: int) -> date:
+        target = self._next_monday()
+        await self.execute(
+            "UPDATE users SET carry_over_until = $2 WHERE telegram_id = $1",
+            telegram_id, target, execute=True,
+        )
+        return target
+
+    async def clear_carry_over(self, telegram_id: int) -> None:
+        await self.execute(
+            "UPDATE users SET carry_over_until = NULL WHERE telegram_id = $1",
+            telegram_id, execute=True,
+        )
+
+    async def get_carry_over_until(self, telegram_id: int) -> date | None:
+        row = await self.execute(
+            "SELECT carry_over_until FROM users WHERE telegram_id = $1",
+            telegram_id, fetchrow=True,
+        )
+        if not row:
+            return None
+        return row.get("carry_over_until")

@@ -227,7 +227,23 @@ def make_admin_student_overview_keyboard(
     ])
 
 
-def make_admin_student_actions_keyboard(telegram_id: int, page: int) -> InlineKeyboardMarkup:
+def make_admin_student_actions_keyboard(
+    telegram_id: int,
+    page: int,
+    frozen_until=None,
+) -> InlineKeyboardMarkup:
+    if frozen_until is None:
+        freeze_button = _btn(
+            "❄️ Заморозить ученика",
+            f"admin:student_freeze:{telegram_id}:{page}",
+        )
+    else:
+        # 2100-01-01 — sentinel «бессрочно»
+        if frozen_until.year >= 2100:
+            label = "☀️ Разморозить (бессрочно)"
+        else:
+            label = f"☀️ Разморозить (до {frozen_until.strftime('%d.%m')})"
+        freeze_button = _btn(label, f"admin:student_unfreeze:{telegram_id}:{page}")
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             _btn("✉️ Написать", f"admin:write_to_student:{telegram_id}:{page}:actions"),
@@ -239,9 +255,41 @@ def make_admin_student_actions_keyboard(telegram_id: int, page: int) -> InlineKe
         ],
         [_btn("📚 Задать ДЗ", f"admin:quick:add_homework:{telegram_id}:{page}:actions")],
         [_btn("⚠️ Отметить прогул", f"admin:no_show:{telegram_id}:{page}")],
+        [freeze_button],
         [_btn("📌 Учебный план", f"admin:study_plan:{telegram_id}:{page}:actions")],
         [_btn("📁 Учебные ссылки", f"admin:resources:student:{telegram_id}:{page}")],
         [_btn("◀️ К карточке ученика", f"admin:student_card:{telegram_id}:{page}")],
+    ])
+
+
+def make_admin_student_freeze_period_keyboard(
+    telegram_id: int, page: int
+) -> InlineKeyboardMarkup:
+    base = f"admin:student_freeze_set:{telegram_id}:{page}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("На неделю", f"{base}:7d")],
+        [_btn("На 2 недели", f"{base}:14d")],
+        [_btn("На месяц", f"{base}:30d")],
+        [_btn("На 3 месяца", f"{base}:90d")],
+        [_btn("Бессрочно", f"{base}:forever")],
+        [_btn("◀️ Отмена", f"admin:student_actions:{telegram_id}:{page}")],
+    ])
+
+
+def make_admin_student_freeze_lessons_prompt_keyboard(
+    telegram_id: int, page: int, period: str, lessons_count: int
+) -> InlineKeyboardMarkup:
+    """Подтверждение: переводить ли N запланированных уроков в `frozen`."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(
+            f"✅ Да, перевести {lessons_count} уроков",
+            f"admin:student_freeze_apply:{telegram_id}:{page}:{period}:yes",
+        )],
+        [_btn(
+            "Нет, оставить как есть",
+            f"admin:student_freeze_apply:{telegram_id}:{page}:{period}:no",
+        )],
+        [_btn("◀️ Отмена", f"admin:student_actions:{telegram_id}:{page}")],
     ])
 
 

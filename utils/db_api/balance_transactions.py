@@ -28,10 +28,23 @@ class DatabaseBalanceTransactionsMixin:
         student_id: int,
         note: str,
     ) -> int | None:
-        """Обнуляет отрицательный баланс одной транзакцией.
+        """DEPRECATED-name: обнуляет любой ненулевой баланс одной транзакцией.
 
-        Возвращает добавленное количество уроков (>0) либо None,
-        если баланс уже >= 0 на момент выполнения.
+        Имя сохранено для обратной совместимости. Возвращает знаковое значение
+        компенсирующей транзакции (например ``-5`` для `+5` баланса, ``+3`` для
+        ``-3`` баланса) либо ``None``, если баланс уже равен нулю.
+        """
+        return await self.reset_balance_to_zero(student_id, note)
+
+    async def reset_balance_to_zero(
+        self,
+        student_id: int,
+        note: str,
+    ) -> int | None:
+        """Обнулить баланс ученика любого знака.
+
+        Создаёт компенсирующую `admin_writeoff`-транзакцию на ``-balance``.
+        Возвращает значение компенсации (signed) либо ``None``, если уже 0.
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -44,9 +57,9 @@ class DatabaseBalanceTransactionsMixin:
                     student_id,
                 )
                 balance = int(row["balance"]) if row else 0
-                if balance >= 0:
+                if balance == 0:
                     return None
-                amount = abs(balance)
+                amount = -balance  # знак противоположный текущему балансу
                 await conn.execute(
                     """
                     INSERT INTO balance_transactions

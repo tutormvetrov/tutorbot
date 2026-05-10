@@ -1099,6 +1099,9 @@ async def achievement_notify_job(bot, db: "Database"):
 
     for row in (rows or []):
         try:
+            # Гейт по флагу заморозки ученика — поздравления тоже не шлём, пока пауза.
+            if await db.is_student_frozen(row["user_id"]):
+                continue
             text = build_achievement_congrats(
                 row["achievement_key"],
                 speech_style=row.get("speech_style"),
@@ -1117,6 +1120,95 @@ async def achievement_notify_job(bot, db: "Database"):
 
     update_job_status("achievement_notify", "ok", sent=sent, total=len(rows or []))
     write_runtime_event("achievement_notify", "ok", sent=sent, total=len(rows or []))
+
+
+async def weekly_balance_reset_job(bot, db: "Database"):
+    """Воскресенье 21:59 МСК — авто-обнуление балансов перед недельным итогом.
+
+    Создаёт компенсирующую транзакцию `admin_writeoff` на ``-balance`` каждому
+    подходящему ученику. Исключения:
+      • неактивный аккаунт (``is_active = false``)
+      • ученик заморожен (``frozen_until > NOW()``)
+      • стоит флаг `carry_over_until >= CURRENT_DATE` («перенесли на следующую неделю»)
+      • в текущий день МСК у ученика был/есть запланированный урок
+        (``lessons.lesson_date`` сегодня) — даём ему день дозаплатить
+    Тихая операция: ученикам ничего не отправляется. Админу — сводное сообщение.
+    """
+    rows = await db.execute(
+        """
+        WITH balances AS (
+            SELECT student_id, COALESCE(SUM(amount_lessons), 0)::int AS bal
+            FROM balance_transactions
+            GROUP BY student_id
+        )
+        SELECT u.telegram_id, u.full_name, b.bal AS balance
+        FROM users u
+        JOIN balances b ON b.student_id = u.telegram_id
+        WHERE u.role = 'student'
+          AND u.is_active = true
+          AND COALESCE(u.is_internal_account, false) = false
+          AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
+          AND (u.carry_over_until IS NULL OR u.carry_over_until < CURRENT_DATE)
+          AND b.bal <> 0
+          AND NOT EXISTS (
+              SELECT 1 FROM lessons l
+              WHERE l.student_id = u.telegram_id
+                AND l.status IN ('active','completed')
+                AND DATE(l.lesson_date AT TIME ZONE 'Europe/Moscow') =
+                    (NOW() AT TIME ZONE 'Europe/Moscow')::date
+          )
+        ORDER BY u.full_name
+        """,
+        fetch=True,
+    ) or []
+
+    affected = []
+    for row in rows:
+        try:
+            adjustment = await db.reset_balance_to_zero(
+                student_id=row["telegram_id"],
+                note="Авто-обнуление недели",
+            )
+            if adjustment is not None:
+                affected.append((row["full_name"], int(row["balance"]), int(adjustment)))
+        except Exception as exc:
+            logger.warning(
+                "weekly_balance_reset: ошибка для %s: %s", row.get("telegram_id"), exc,
+            )
+
+    # Сводка админу
+    if not config.ADMIN_ID:
+        update_job_status("weekly_balance_reset", "ok", affected=len(affected))
+        write_runtime_event("weekly_balance_reset", "ok", affected=len(affected))
+        return
+    try:
+        if affected:
+            preview_lines = [
+                f"• {name}: {prev:+d} → 0 (компенсация {adj:+d})"
+                for name, prev, adj in affected[:50]
+            ]
+            tail = "" if len(affected) <= 50 else f"\n…и ещё {len(affected) - 50}"
+            text = (
+                "🔄 <b>Авто-обнуление балансов</b>\n\n"
+                f"Затронуто учеников: <b>{len(affected)}</b>\n\n"
+                + "\n".join(preview_lines)
+                + tail
+            )
+        else:
+            text = "🔄 <b>Авто-обнуление балансов</b>\n\nНикого не затронуло (всё чисто)."
+        await asyncio.wait_for(
+            bot.send_message(config.ADMIN_ID, text), timeout=10,
+        )
+    except Exception as exc:
+        logger.warning("weekly_balance_reset: ошибка отправки сводки админу: %s", exc)
+
+    update_job_status("weekly_balance_reset", "ok", affected=len(affected))
+    write_runtime_event("weekly_balance_reset", "ok", affected=len(affected))
+
+
+async def run_weekly_balance_reset_now(bot, db: "Database"):
+    """Точка входа для ручного триггера / тестов."""
+    await weekly_balance_reset_job(bot, db)
 
 
 async def lesson_feedback_request_job(bot, db: "Database"):
@@ -1161,6 +1253,13 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
         args=[bot, db, "morning"],
         id="payment_reminder_morning",
         name="Воскресное мягкое напоминание об оплате",
+    )
+    scheduler.add_job(
+        weekly_balance_reset_job,
+        CronTrigger(day_of_week="sun", hour=21, minute=59),
+        args=[bot, db],
+        id="weekly_balance_reset",
+        name="Авто-обнуление балансов перед недельным итогом",
     )
     scheduler.add_job(
         payment_reminder_job,

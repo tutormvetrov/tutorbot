@@ -1380,6 +1380,34 @@ class DatabaseSchemaMixin:
         except Exception as exc:
             self._log_migration_failure("migrate_homework_add_completed_at", exc)
 
+    async def migrate_users_add_freeze_until(self):
+        """Ручная заморозка ученика админом.
+
+        NULL = не заморожен; конкретный TIMESTAMP = до этой даты;
+        2100-01-01 = бессрочно (sentinel).
+        """
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS frozen_until TIMESTAMP",
+                execute=True,
+            )
+            await self.execute(
+                "CREATE INDEX IF NOT EXISTS idx_users_frozen_until ON users(frozen_until)",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_freeze_until", exc)
+
+    async def migrate_users_add_carry_over(self):
+        """Защита ученика от ближайшего воскресного авто-обнуления баланса."""
+        try:
+            await self.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS carry_over_until DATE",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_users_add_carry_over", exc)
+
     async def verify_required_schema(self):
         required_columns = {
             "users": {
@@ -1408,6 +1436,8 @@ class DatabaseSchemaMixin:
                 "engagement_mode",
                 "preferred_name",
                 "homework_exempt",
+                "frozen_until",
+                "carry_over_until",
             },
             "lessons": {
                 "lesson_date",
@@ -1674,4 +1704,6 @@ class DatabaseSchemaMixin:
         await self.migrate_users_add_preferred_name()
         await self.migrate_users_add_homework_exempt()
         await self.migrate_homework_add_completed_at()
+        await self.migrate_users_add_freeze_until()
+        await self.migrate_users_add_carry_over()
         await self.verify_required_schema()

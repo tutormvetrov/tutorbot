@@ -1909,6 +1909,22 @@ def build_admin_student_card_text(
         f"🆔 Telegram ID: <code>{student['telegram_id']}</code>",
         f"📚 Режим ДЗ: <b>{'не задаю' if student.get('homework_exempt') else 'задаю'}</b>",
     ]
+    # Маркер активной заморозки. `frozen_until` — TIMESTAMP; sentinel-год 2100
+    # означает «бессрочно».
+    from datetime import datetime as _dt_now
+    frozen_until = student.get("frozen_until")
+    if frozen_until and frozen_until > _dt_now.utcnow():
+        if getattr(frozen_until, "year", 0) >= 2100:
+            lines.append("❄️ <b>Заморожен бессрочно</b>")
+        else:
+            lines.append(f"❄️ <b>Заморожен до {frozen_until.strftime('%d.%m.%Y')}</b>")
+    carry_over_until = student.get("carry_over_until")
+    if carry_over_until:
+        from datetime import date as _date_today
+        if carry_over_until >= _date_today.today():
+            lines.append(
+                f"🔁 <b>Защищён от авто-обнуления до {carry_over_until.strftime('%d.%m')}</b>"
+            )
     goal_text = (student.get("goal_text") or "").strip()
     if goal_text:
         lines.extend(["", f"🎯 Цель: {html.quote(goal_text)}"])

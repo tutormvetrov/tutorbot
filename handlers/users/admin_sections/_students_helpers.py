@@ -264,17 +264,31 @@ async def _render_admin_student_card(message: types.Message, db: Database, stude
 
 
 async def _render_admin_student_actions(message: types.Message, db: Database, student_id: int, page: int):
+    from datetime import datetime as _datetime
     student = await db.get_user(student_id)
     if not student or student["role"] != "student" or student["is_active"] is False:
         await message.edit_text("⚠️ Ученик не найден или уже деактивирован.", reply_markup=back_to_admin_keyboard)
         return
+    frozen_until = student.get("frozen_until")
+    # активной заморозкой считаем только дату в будущем
+    frozen_active = frozen_until if (frozen_until and frozen_until > _datetime.utcnow()) else None
+    header_lines = [
+        f"⚡ <b>Действия: {q(student['full_name'])}</b>",
+        "",
+        "Здесь собраны быстрые рабочие действия по ученику.",
+    ]
+    if frozen_active:
+        if frozen_active.year >= 2100:
+            header_lines.insert(2, "❄️ <b>Заморожен бессрочно</b>")
+        else:
+            header_lines.insert(
+                2, f"❄️ <b>Заморожен до {frozen_active.strftime('%d.%m.%Y')}</b>"
+            )
     await message.edit_text(
-        "\n".join([
-            f"⚡ <b>Действия: {q(student['full_name'])}</b>",
-            "",
-            "Здесь собраны быстрые рабочие действия по ученику.",
-        ]),
-        reply_markup=make_admin_student_actions_keyboard(student_id, page),
+        "\n".join(header_lines),
+        reply_markup=make_admin_student_actions_keyboard(
+            student_id, page, frozen_until=frozen_active,
+        ),
     )
 
 

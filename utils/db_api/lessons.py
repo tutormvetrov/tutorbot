@@ -20,6 +20,7 @@ class DatabaseLessonMixin:
               AND l.reminder_sent = false
               AND (u.lesson_reminders = 'enabled'
                    OR u.lesson_reminders LIKE 'paused_until:%')
+              AND (u.frozen_until IS NULL OR u.frozen_until < NOW())
               AND (
                   (
                       COALESCE(u.lesson_format, 'online') != 'offline'
