@@ -210,6 +210,47 @@ class DatabaseHomeworkMixin:
             fetch=True,
         )
 
+    async def get_homework_template_materials(self, student_id: int, limit: int = 3):
+        return await self.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    hmm.*,
+                    h.created_at AS homework_created_at,
+                    h.deadline AS homework_deadline,
+                    COUNT(*) OVER (PARTITION BY hmm.material_key) AS mentions_count,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hmm.material_key
+                        ORDER BY h.created_at DESC, h.id DESC, hmm.id DESC
+                    ) AS row_num
+                FROM homework_material_mentions hmm
+                JOIN homework h ON h.id = hmm.homework_id
+                WHERE hmm.student_id = $1
+            )
+            SELECT
+                material_key,
+                material_title,
+                material_kind,
+                page_from,
+                page_to,
+                unit_label,
+                chapter_label,
+                lesson_label,
+                exercise_label,
+                raw_fragment,
+                mentions_count,
+                homework_created_at,
+                homework_deadline
+            FROM ranked
+            WHERE row_num = 1
+            ORDER BY mentions_count DESC, homework_created_at DESC, material_key ASC
+            LIMIT $2
+            """,
+            student_id,
+            limit,
+            fetch=True,
+        )
+
     async def get_latest_homework_material_mention(self, student_id: int):
         return await self.execute(
             """

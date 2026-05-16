@@ -29,6 +29,7 @@ class DummyBot:
         self.sent_documents = []
         self.edited_messages = []
         self.copied_messages = []
+        self.chat_actions = []
 
     async def get_me(self):
         return SimpleNamespace(username="tutorbot_test")
@@ -67,6 +68,9 @@ class DummyBot:
                 reply_markup=reply_markup,
             )
         )
+
+    async def send_chat_action(self, chat_id, action):
+        self.chat_actions.append(SimpleNamespace(chat_id=chat_id, action=action))
 
 
 class DummyMessage:

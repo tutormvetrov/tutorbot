@@ -23,6 +23,7 @@ from handlers.users.admin_sections.homework import (
     admin_hw_deadline_entered,
     admin_hw_description_entered,
 )
+from handlers.users.admin_sections.inbox import admin_inbox_add_payment
 from handlers.users.admin_sections.payments import admin_add_payment_quick, admin_payment_count_entered
 from handlers.users.admin_sections.students import (
     admin_student_deactivate_prompt,
@@ -47,6 +48,7 @@ from handlers.users.callbacks import (
     process_homework_attachment,
     process_homework,
     process_homework_list,
+    process_help,
     process_lesson_presence,
     process_more,
     process_notif_action,
@@ -542,6 +544,9 @@ class HomeworkFlowTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_student_homework_opens_active_and_allows_switch_to_done(self):
         class FakeDB:
+            async def get_user(self, user_id):
+                return {"telegram_id": user_id, "homework_exempt": False}
+
             async def get_student_homework(self, user_id, status):
                 if status == "active":
                     return [{"id": 1, "title": "Активное ДЗ", "deadline": datetime(2026, 4, 5), "description": None}]
@@ -870,8 +875,8 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.calls = []
 
-            async def add_payment(self, student_id, amount, count):
-                self.calls.append((student_id, amount, count))
+            async def add_payment(self, student_id, amount, count, payer_id=None):
+                self.calls.append((student_id, amount, count, payer_id))
 
             async def get_user(self, telegram_id):
                 return {
@@ -900,6 +905,40 @@ class StudentAdminFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bot.edited_messages)
         self.assertIn("Иван Петров", bot.edited_messages[-1].text)
         self.assertIn("Баланс", bot.edited_messages[-1].text)
+
+    async def test_admin_inbox_payment_action_starts_payment_for_child_and_payer(self):
+        state = DummyState()
+        message = DummyMessage(user_id=config.ADMIN_ID)
+        callback = DummyCallbackQuery(
+            "admin:inbox:add_payment:42",
+            message=message,
+            user_id=config.ADMIN_ID,
+        )
+
+        class FakeDB:
+            async def get_inbox_event(self, event_id):
+                return {
+                    "id": event_id,
+                    "kind": "reply",
+                    "payload": {
+                        "telegram_id": 960,
+                        "full_name": "Мария Иванова",
+                        "role": "parent",
+                        "context": "payment",
+                        "student_id": 707,
+                        "child_label": "Анна Иванова",
+                    },
+                    "handled_at": None,
+                }
+
+        await admin_inbox_add_payment(callback, state, FakeDB())
+
+        self.assertEqual(state.state.state, "AdminAddPayment:waiting_for_payment_amount")
+        self.assertEqual(state.data["student_id"], 707)
+        self.assertEqual(state.data["admin_payment_payer_id"], 960)
+        self.assertEqual(state.data["admin_inbox_event_id"], 42)
+        self.assertEqual(state.data["admin_return_view"], "admin:inbox:item:42")
+        self.assertIn("Анна Иванова", message.edits[-1])
 
     async def test_admin_cancel_restores_previous_view(self):
         state = DummyState()
@@ -1553,6 +1592,22 @@ class MoreCallbackFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("back_to_menu", callbacks)
         self.assertNotIn("freeze", callbacks)
         self.assertNotIn("level_test:now", callbacks)
+
+    async def test_help_callback_renders_help_text_with_back_button(self):
+        message = DummyMessage(user_id=555, full_name="Анна Смирнова")
+        callback = DummyCallbackQuery("help", message=message, user_id=555, full_name="Анна Смирнова")
+
+        await process_help(callback)
+
+        self.assertTrue(message.edits)
+        self.assertIn("справка", message.edits[-1].lower())
+        callbacks = [
+            button.callback_data
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("back_to_menu", callbacks)
 
 
 class AdminInboxFlowTest(unittest.IsolatedAsyncioTestCase):

@@ -90,6 +90,14 @@ async def start_student_reply(callback_query: types.CallbackQuery, state: FSMCon
         parent_id=callback_query.from_user.id if user["role"] == "parent" else None,
         child_link_id=child_link_id,
     )
+    child_payload: dict = {}
+    if user["role"] == "parent" and context_key == "payment" and child_link_id:
+        child = await db.get_parent_child_link(callback_query.from_user.id, child_link_id)
+        if child:
+            child_payload = {
+                "reply_student_id": child.get("student_id"),
+                "reply_child_label": child.get("child_label") or child.get("student_info"),
+            }
 
     await state.clear()
     await state.set_state(StudentReply.waiting_for_message)
@@ -98,6 +106,7 @@ async def start_student_reply(callback_query: types.CallbackQuery, state: FSMCon
         reply_entity_id=entity_id,
         reply_child_link_id=child_link_id,
         reply_context_label=context_label,
+        **child_payload,
     )
 
     await _open_reply_prompt(
@@ -169,6 +178,9 @@ async def process_student_reply_message(message: types.Message, state: FSMContex
                 "context": data.get("reply_context_key", "general"),
                 "message_preview": (message.text or message.caption or "")[:200],
                 "role": user["role"],
+                "child_link_id": data.get("reply_child_link_id"),
+                "student_id": data.get("reply_student_id"),
+                "child_label": data.get("reply_child_label"),
             })
         except Exception:
             logger.warning("Не удалось записать reply в admin_inbox", exc_info=True)

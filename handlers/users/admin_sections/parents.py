@@ -20,7 +20,7 @@ from keyboards.inline import (
     make_back_button_keyboard,
 )
 from aiogram.types import InlineKeyboardMarkup
-from states.registration import AdminParentsDirectory
+from states.registration import AdminEditParentFullName, AdminParentsDirectory
 from utils.db_api.postgresql import Database
 from utils.ui_text import (
     ADMIN_PARENTS_EMPTY_TEXT,
@@ -292,6 +292,58 @@ async def admin_parent_card(callback_query: types.CallbackQuery, db: Database):
     parent_id, page = _parse_parent_page_callback(callback_query.data)
     await _render_admin_parent_card(callback_query.message, db, parent_id, page)
     await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data.startswith("admin:parent_full_name:"), StateFilter("*"))
+async def admin_parent_full_name_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parent_id, page = _parse_parent_page_callback(callback_query.data)
+    parent = await db.get_user(parent_id)
+    if not parent or parent.get("role") != "parent":
+        await callback_query.answer("Родитель не найден.", show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(parent_full_name_id=parent_id, parent_full_name_page=page)
+    await state.set_state(AdminEditParentFullName.waiting_for_text)
+    await callback_query.message.edit_text(
+        "\n".join([
+            "✏️ <b>ФИО родителя</b>",
+            "",
+            f"Текущее: <b>{q(parent['full_name'])}</b>",
+            "",
+            "Пришлите новое ФИО одним сообщением.",
+        ]),
+        reply_markup=make_back_button_keyboard("❌ Отмена", f"admin:parent_card:{parent_id}:{page}"),
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminEditParentFullName.waiting_for_text))
+async def admin_parent_full_name_save(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    parent_id = data.get("parent_full_name_id")
+    page = int(data.get("parent_full_name_page") or 0)
+    new_value = " ".join((message.text or "").split()).strip()
+    if not parent_id:
+        await state.clear()
+        return
+    if len(new_value) < 2:
+        await message.answer("⚠️ ФИО не может быть пустым.", reply_markup=make_back_button_keyboard("❌ Отмена", f"admin:parent_card:{parent_id}:{page}"))
+        return
+    await db.update_user_full_name(int(parent_id), new_value)
+    await state.clear()
+    await message.answer(
+        build_action_result_text(
+            "ФИО родителя обновлено",
+            f"👨‍👩‍👧 <b>{q(new_value)}</b>",
+            next_step="Карточка и список родителей будут показывать новое имя.",
+        ),
+        reply_markup=make_back_button_keyboard("◀️ К карточке родителя", f"admin:parent_card:{parent_id}:{page}"),
+    )
 
 
 @router.callback_query(lambda c: c.data.startswith("admin:parent_danger:"))

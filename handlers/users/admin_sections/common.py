@@ -1,3 +1,5 @@
+import re
+
 from aiogram import html, types
 
 from data import config
@@ -15,6 +17,10 @@ def q(value) -> str:
     return html.quote(str(value)) if value is not None else "—"
 
 
+def strip_custom_emoji_html(text: str) -> str:
+    return re.sub(r"<tg-emoji\b[^>]*>(.*?)</tg-emoji>", r"\1", text, flags=re.IGNORECASE | re.DOTALL)
+
+
 def message_to_html(message: types.Message) -> str:
     text = (message.text or "").strip()
     if not text:
@@ -22,7 +28,7 @@ def message_to_html(message: types.Message) -> str:
     if message.entities:
         formatted = (message.html_text or "").strip()
         if formatted:
-            return formatted
+            return strip_custom_emoji_html(formatted)
     return html.quote(text)
 
 
@@ -33,7 +39,7 @@ def message_or_caption_to_html(message: types.Message) -> str:
     if message.entities or getattr(message, "caption_entities", None):
         formatted = (getattr(message, "html_text", "") or "").strip()
         if formatted:
-            return formatted
+            return strip_custom_emoji_html(formatted)
     return html.quote(raw)
 
 
@@ -304,6 +310,13 @@ async def restore_admin_view(bot, db, chat_id: int | None, message_id: int | Non
         page = int(parts[3]) if len(parts) > 3 else None
         source = parts[4] if len(parts) > 4 else "card"
         await _render_admin_payments(target, db, student_id, page=page, source=source)
+        return True
+
+    if view.startswith("admin:inbox:item:"):
+        from handlers.users.admin_sections.inbox import render_admin_inbox_item
+
+        event_id = int(view.split(":")[3])
+        await render_admin_inbox_item(target, db, event_id)
         return True
 
     if view == "admin:all_homework":

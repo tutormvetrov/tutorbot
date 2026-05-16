@@ -1101,6 +1101,54 @@ def build_contacts_text(info: dict, show_address: bool = False) -> str:
     return "\n".join(lines)
 
 
+def build_registration_step_text(
+    step: int,
+    total: int,
+    question: str,
+    *,
+    already: list[str] | None = None,
+    example: str | None = None,
+    note: str | None = None,
+) -> str:
+    lines = [
+        f"<b>Шаг {step}/{total}</b>",
+    ]
+    cleaned = [item.strip() for item in already or [] if item and item.strip()]
+    if cleaned:
+        lines.append(f"Уже есть: {html.quote(' · '.join(cleaned))}")
+    lines.extend(["", question])
+    if example:
+        lines.extend(["", f"Например: {example}"])
+    lines.extend([
+        "",
+        note or "Можно ответить коротким текстом. Голосовое преподавателю можно отправить после регистрации.",
+    ])
+    return "\n".join(lines)
+
+
+def build_registration_done_text(
+    title: str,
+    saved_lines: list[str],
+    contacts_text: str,
+    *,
+    next_hint: str = "",
+) -> str:
+    lines = [
+        f"✅ <b>{html.quote(title)}</b>",
+        "",
+        "<b>Сохранено</b>",
+    ]
+    lines.extend(saved_lines or ["Данные профиля сохранены."])
+    lines.extend([
+        "",
+        "📞 <b>Контакты и адрес</b>",
+        contacts_text,
+    ])
+    if next_hint:
+        lines.extend(["", next_hint])
+    return "\n".join(lines)
+
+
 def build_more_screen_text(role: str) -> str:
     return "👤 <b>Ещё</b>"
 
@@ -1971,6 +2019,8 @@ def build_admin_pair_card_text(pair: dict) -> str:
     members = [str(name).strip() for name in pair.get("member_names") or [] if str(name).strip()]
     member_lines = [f"• {html.quote(name)}" for name in members] or ["• —"]
     next_lesson = format_datetime(pair.get("next_lesson_date")) if pair.get("next_lesson_date") else "не назначен"
+    naming_mode = "ручное" if pair.get("naming_mode") == "manual" else "авто"
+    common_surname = (pair.get("common_surname") or "").strip() or "не задана"
     return "\n".join([
         f"👥 <b>{html.quote(pair_title_label(pair) or 'Учебная пара')}</b>",
         "",
@@ -1978,6 +2028,8 @@ def build_admin_pair_card_text(pair: dict) -> str:
         *member_lines,
         "",
         f"Основной контакт: <b>{html.quote(pair.get('primary_student_name') or '—')}</b>",
+        f"Название: <b>{html.quote(naming_mode)}</b>",
+        f"Общая фамилия: <b>{html.quote(common_surname)}</b>",
         "Баланс: <b>общий</b>",
         "Домашнее задание: <b>одно общее</b>",
         "Темп: <b>один на двоих</b>",
@@ -2126,12 +2178,85 @@ def build_admin_homework_list_text(items: list) -> str:
     return "\n".join(lines)
 
 
+def build_homework_template_draft(student_name: str | None, materials: list, language: str | None = None) -> str:
+    materials = list(materials or [])[:3]
+    if not materials:
+        return ""
+
+    lines: list[str] = []
+    student_name = (student_name or "").strip()
+    if student_name:
+        lines.append(f"• {student_name}")
+    lines.append("📝 Задание:")
+
+    for index, item in enumerate(materials, start=1):
+        title = _homework_template_title(item, language)
+        lines.extend(["", f"{index}. {title}."])
+
+        if _is_vocabulary_material(item):
+            url = _extract_template_url(str(_item_value(item, "raw_fragment") or ""))
+            if _is_french_language(language):
+                text = "Apprenez des nouvelles expressions ici"
+            else:
+                text = "Learn new words here"
+            lines.append(f"{text}: {url}." if url else f"{text}:")
+            continue
+
+        progress = _homework_template_progress(item)
+        if progress:
+            lines.append(progress)
+
+    return "\n".join(lines)
+
+
+def _is_french_language(language: str | None) -> bool:
+    return "фран" in (language or "").strip().lower() or "fr" == (language or "").strip().lower()
+
+
+def _is_vocabulary_material(item) -> bool:
+    kind = str(_item_value(item, "material_kind") or "").strip().lower()
+    title = str(_item_value(item, "material_title") or "").strip().lower()
+    return kind == "vocabulary" or "vocabulary" in title or "vocabulaire" in title
+
+
+def _homework_template_title(item, language: str | None) -> str:
+    if _is_vocabulary_material(item):
+        return "Le vocabulaire" if _is_french_language(language) else "Vocabulary"
+    title = str(_item_value(item, "material_title") or "").strip() or "Материал"
+    return title.rstrip(" .")
+
+
+def _homework_template_progress(item) -> str:
+    exercise = str(_item_value(item, "exercise_label") or "").strip()
+    page_from = _item_value(item, "page_from")
+    page_to = _item_value(item, "page_to")
+    parts = []
+    if exercise:
+        parts.append(exercise.rstrip(" .;"))
+    if page_from:
+        if page_to and page_to != page_from:
+            parts.append(f"pages {page_from}-{page_to}")
+        else:
+            parts.append(f"page {page_from}")
+    return f"{' — '.join(parts)};" if parts else ""
+
+
+def _extract_template_url(value: str) -> str:
+    import re
+
+    match = re.search(r"https?://\S+", value or "")
+    if not match:
+        return ""
+    return match.group(0).rstrip(".,;)")
+
+
 def build_admin_homework_description_prompt(
     student_name: str | None,
     recent_mentions: list,
     top_materials: list,
     latest_mention,
     has_homework_history: bool,
+    template_draft: str | None = None,
 ) -> str:
     student_name = (student_name or "").strip()
     intro = []
@@ -2143,43 +2268,14 @@ def build_admin_homework_description_prompt(
             "",
         ]
 
-    if not has_homework_history:
+    template_draft = (template_draft or "").strip()
+    if not template_draft:
         return ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT
 
-    if not recent_mentions:
-        lines = intro + [
-            "📚 <b>По прошлым ДЗ</b>",
-            "Статистика по учебникам или книгам пока не накоплена.",
-            "",
-            ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT,
-        ]
-        return "\n".join(lines)
-
-    lines = intro + ["📚 <b>По прошлым ДЗ</b>"]
-    for item in recent_mentions[:3]:
-        progress = material_progress_label(item)
-        date_value = (
-            _item_value(item, "homework_created_at")
-            or _item_value(item, "homework_deadline")
-            or _item_value(item, "created_at")
-        )
-        summary_parts = [progress] if progress else []
-        if date_value:
-            summary_parts.append(format_date(date_value))
-        suffix = f" · {' · '.join(summary_parts)}" if summary_parts else ""
-        lines.append(f"• <b>{html.quote(str(_item_value(item, 'material_title') or '—'))}</b>{html.quote(suffix)}")
-
-    if top_materials:
-        lines.extend(["", "📈 <b>Чаще всего</b>"])
-        for item in top_materials[:3]:
-            count = int(_item_value(item, "mentions_count") or 0)
-            lines.append(
-                f"• <b>{html.quote(str(_item_value(item, 'material_title') or '—'))}</b> · {count} упомин."
-            )
-
-    hint_text = build_next_homework_hint(latest_mention, recent_mentions)
-    if hint_text:
-        lines.extend(["", "💡 <b>Подсказка</b>", html.quote(hint_text)])
+    lines = intro + [
+        "📋 <b>Черновик по статистике</b>",
+        f"<pre>{html.quote(template_draft)}</pre>",
+    ]
 
     lines.extend(["", ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT])
     return "\n".join(lines)

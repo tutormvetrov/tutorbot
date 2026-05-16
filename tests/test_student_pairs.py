@@ -47,6 +47,8 @@ class StudentPairSchemaTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("primary_student_id BIGINT NOT NULL", sql)
         self.assertIn("balance_mode TEXT NOT NULL DEFAULT 'shared'", sql)
         self.assertIn("homework_mode TEXT NOT NULL DEFAULT 'shared'", sql)
+        self.assertIn("naming_mode TEXT NOT NULL DEFAULT 'auto'", sql)
+        self.assertIn("common_surname TEXT", sql)
         self.assertIn("invite_token TEXT UNIQUE", sql)
         self.assertIn("invite_used_at TIMESTAMP", sql)
         self.assertIn("student_groups_primary_student_idx", sql)
@@ -191,6 +193,8 @@ class StudentPairAdminFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Учебная пара создана", message.answers[-1])
         callbacks = [button.callback_data for row in message.reply_markups[-1].inline_keyboard for button in row]
         self.assertIn("admin:pair_invite:7", callbacks)
+        self.assertIn("admin:pair_name:primary:7", callbacks)
+        self.assertIn("admin:pair_name:partner:7", callbacks)
         self.assertIn("admin:student_card:555:0", callbacks)
 
     async def test_admin_can_generate_partner_invite_link(self):

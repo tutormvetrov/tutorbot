@@ -37,6 +37,18 @@ try:
 except ValueError:
     TOUCHES_RUN_MINUTE = 0
 
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+RATE_LIMIT_USER_SECONDS = _env_float("RATE_LIMIT_USER_SECONDS", 0.7)
+RATE_LIMIT_ADMIN_SECONDS = _env_float("RATE_LIMIT_ADMIN_SECONDS", 0.25)
+RATE_LIMIT_CALLBACK_SECONDS = _env_float("RATE_LIMIT_CALLBACK_SECONDS", 0.5)
+
 TUTORBOT_TIMEZONE = str(os.getenv("TUTORBOT_TIMEZONE", "Europe/Moscow")).strip() or "Europe/Moscow"
 try:
     BUSINESS_TIMEZONE = ZoneInfo(TUTORBOT_TIMEZONE)

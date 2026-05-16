@@ -17,9 +17,12 @@ if str(ROOT) not in sys.path:
 from datetime import datetime
 
 from keyboards.inline import (
+    finance_keyboard,
     make_admin_education_keyboard,
     make_admin_inbox_keyboard,
     make_admin_inbox_item_keyboard,
+    make_finance_balances_keyboard,
+    make_finance_payment_inbox_keyboard,
     make_contacts_keyboard,
     make_homework_item_keyboard,
     make_lesson_delete_confirm_keyboard,
@@ -27,14 +30,46 @@ from keyboards.inline import (
     make_lesson_presence_keyboard,
     make_materials_keyboard,
     make_parent_home_keyboard,
+    make_payment_autoconfirm_keyboard,
+    make_payment_delete_confirm_keyboard,
+    make_payment_delete_keyboard,
+    make_post_registration_keyboard,
     make_pricing_rates_keyboard,
     make_schedule_keyboard,
     make_study_plan_keyboard,
     make_tariff_picker_keyboard,
+    parent_more_keyboard,
+    student_more_keyboard,
 )
 
 
 class DynamicKeyboardTest(unittest.TestCase):
+    def test_post_registration_keyboard_highlights_contacts_and_guide(self):
+        kb = make_post_registration_keyboard(include_level_test=True)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("contacts", callbacks)
+        self.assertIn("guide:menu:student", callbacks)
+        self.assertIn("level_test:now", callbacks)
+
+    def test_parent_post_registration_keeps_children_entry(self):
+        kb = make_post_registration_keyboard(guide_callback="guide:send:parent", include_parent_home=True)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+
+        self.assertIn("parent:home", callbacks)
+        self.assertIn("contacts", callbacks)
+        self.assertIn("guide:send:parent", callbacks)
+
+    def test_more_keyboards_expose_help_callback(self):
+        for keyboard in (student_more_keyboard, parent_more_keyboard):
+            callbacks = [
+                button.callback_data
+                for row in keyboard.inline_keyboard
+                for button in row
+                if button.callback_data
+            ]
+            self.assertIn("help", callbacks)
+
     def test_schedule_keyboard_exposes_calendar_url(self):
         kb = make_schedule_keyboard("https://calendar.google.com/example")
         urls = [button.url for row in kb.inline_keyboard for button in row if getattr(button, "url", None)]
@@ -172,6 +207,68 @@ class AdminInboxKeyboardTest(unittest.TestCase):
         self.assertIn("admin:inbox:reply:42", callbacks)
         self.assertIn("admin:inbox:item:42:close", callbacks)
         self.assertIn("admin:inbox", callbacks)
+
+    def test_payment_inbox_item_has_add_payment_action(self):
+        kb = make_admin_inbox_item_keyboard(42, "reply", context="payment", student_id=707)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:inbox:add_payment:42", callbacks)
+
+    def test_finance_keyboard_exposes_payment_operations(self):
+        callbacks = [button.callback_data for row in finance_keyboard.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:add_payment:finance", callbacks)
+        self.assertIn("admin:finance:payment_inbox", callbacks)
+        self.assertIn("admin:finance:unpaid", callbacks)
+        self.assertIn("admin:finance:balances", callbacks)
+        self.assertIn("admin:pricing", callbacks)
+
+    def test_finance_payment_inbox_returns_to_finance_item_route(self):
+        kb = make_finance_payment_inbox_keyboard([
+            {
+                "id": 42,
+                "kind": "reply",
+                "payload": {"full_name": "Мария", "context": "payment", "message_preview": "Оплатила"},
+                "created_at": datetime.now(),
+            }
+        ])
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:finance:inbox:item:42", callbacks)
+        self.assertIn("admin:finance", callbacks)
+
+    def test_finance_balances_keyboard_opens_payment_management(self):
+        kb = make_finance_balances_keyboard([
+            {"telegram_id": 707, "full_name": "Анна Иванова", "lesson_balance": 0}
+        ])
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:student_payments:707:0:finance", callbacks)
+        self.assertIn("admin:finance", callbacks)
+
+    def test_payment_autoconfirm_keyboard_allows_cancel(self):
+        kb = make_payment_autoconfirm_keyboard(707, 3000, 4)
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("cancel_fsm", callbacks)
+
+    def test_payment_management_from_finance_returns_to_finance_balances(self):
+        kb = make_payment_delete_keyboard(707, [], page=0, source="finance")
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("admin:finance:balances", callbacks)
+        self.assertNotIn("admin:cat:education", callbacks)
+
+    def test_payment_delete_requires_confirmation(self):
+        kb = make_payment_delete_keyboard(
+            707,
+            [{"id": 55, "payment_date": datetime.now(), "amount": 3000}],
+            page=0,
+            source="finance",
+        )
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("payment_delete_confirm:707:55:0:finance", callbacks)
+        self.assertNotIn("payment_delete:707:55:0:finance", callbacks)
+
+    def test_payment_delete_confirmation_returns_to_finance_source(self):
+        kb = make_payment_delete_confirm_keyboard(707, 55, page=0, source="finance")
+        callbacks = [button.callback_data for row in kb.inline_keyboard for button in row if button.callback_data]
+        self.assertIn("payment_delete:707:55:0:finance", callbacks)
+        self.assertIn("admin:student_payments:707:0:finance", callbacks)
 
     def test_parent_home_traffic_light_linked(self):
         children = [

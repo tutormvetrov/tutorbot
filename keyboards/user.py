@@ -101,9 +101,11 @@ parent_main_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👤 Профиль", "profile")],
     [_btn("📊 Мой прогресс", "more:progress")],
+    [_btn("🎯 Моя цель", "goal:set")],
     [_btn("🔔 Управление уведомлениями", "notif:manage")],
     [_btn("🧪 Тест уровня", "level_test:now")],
     [_btn("❄️ Заморозка", "freeze")],
+    [_btn("❓ Помощь", "help")],
     [_btn("📥 Инструкция к боту", "guide:menu:student")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],
@@ -112,6 +114,7 @@ student_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
 parent_more_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("👤 Профиль родителя", "profile")],
     [_btn("🔔 Управление уведомлениями", "notif:manage")],
+    [_btn("❓ Помощь", "help")],
     [_btn("📥 Инструкция к боту", "guide:send:parent")],
     [_btn("🛡 Опасные действия", "profile:danger")],
     [_btn("◀️ Главное меню", "back_to_menu")],

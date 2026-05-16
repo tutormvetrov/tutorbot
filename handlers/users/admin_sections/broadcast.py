@@ -1,7 +1,7 @@
 from datetime import date
 
 from aiogram import Router, types
-from aiogram.filters import StateFilter
+from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 
 from utils.brand import choose_tone_variant
@@ -18,6 +18,12 @@ from keyboards.inline import (
 from utils.scheduler import build_reschedule_slot_payloads
 from states.registration import AdminBroadcast
 from utils.db_api.postgresql import Database
+from utils.telegram_actions import with_chat_action
+from utils.pending_admin_actions import (
+    clear_pending_broadcast,
+    has_pending_broadcast,
+    mark_pending_broadcast,
+)
 from utils.ui_text import (
     ADMIN_BROADCAST_EDIT_TEXT,
     ADMIN_BROADCAST_EMPTY_RECIPIENTS_TEXT,
@@ -39,6 +45,13 @@ from handlers.users.admin_sections.common import (
 router = Router()
 
 _EMPTY_FILTERS: dict = {"stages": [], "levels": [], "formats": [], "balance": [], "types": []}
+
+
+class PendingBroadcastTextFilter(BaseFilter):
+    async def __call__(self, message: types.Message) -> bool:
+        user = getattr(message, "from_user", None)
+        user_id = getattr(user, "id", None)
+        return bool(user_id and is_admin(user_id) and await has_pending_broadcast(user_id))
 
 
 def build_illness_broadcast_text(_: str | None = None) -> str:
@@ -247,6 +260,7 @@ async def admin_broadcast_start(callback_query: types.CallbackQuery):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
+    await clear_pending_broadcast(callback_query.from_user.id)
     await callback_query.message.edit_text(
         ADMIN_BROADCAST_START_TEXT,
         reply_markup=broadcast_keyboard,
@@ -272,6 +286,7 @@ async def admin_broadcast_select(callback_query: types.CallbackQuery, state: FSM
     if kind == 'custom':
         await state.set_state(AdminBroadcast.waiting_for_text)
         await state.update_data(broadcast_kind="custom")
+        await mark_pending_broadcast(callback_query.from_user.id)
         await callback_query.message.edit_text(
             ADMIN_BROADCAST_ENTER_TEXT,
             reply_markup=cancel_fsm_keyboard,
@@ -281,6 +296,7 @@ async def admin_broadcast_select(callback_query: types.CallbackQuery, state: FSM
 
     template = BROADCAST_TEMPLATES.get(kind, '')
     broadcast_text = template() if callable(template) else template
+    await clear_pending_broadcast(callback_query.from_user.id)
     await state.update_data(
         broadcast_kind=kind,
         broadcast_mode="text",
@@ -301,6 +317,7 @@ async def admin_broadcast_text_entered(message: types.Message, state: FSMContext
             reply_markup=cancel_fsm_keyboard,
         )
         return
+    await clear_pending_broadcast(message.from_user.id)
     await state.update_data(
         broadcast_kind="custom",
         broadcast_mode=payload["mode"],
@@ -312,26 +329,37 @@ async def admin_broadcast_text_entered(message: types.Message, state: FSMContext
     await _show_broadcast_preview(message, state, payload["preview"])
 
 
-@router.callback_query(lambda c: c.data == 'bc_confirm', StateFilter(AdminBroadcast.waiting_for_text_confirm))
+@router.message(StateFilter(None), PendingBroadcastTextFilter())
+async def admin_broadcast_pending_text_entered(message: types.Message, state: FSMContext):
+    await admin_broadcast_text_entered(message, state)
+
+
+@router.callback_query(lambda c: c.data == 'bc_confirm')
 async def admin_broadcast_confirm_text(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
     data = await state.get_data()
+    broadcast_preview = data.get('broadcast_preview') or data.get('broadcast_text')
+    if not broadcast_preview:
+        await callback_query.answer("Предпросмотр устарел. Создайте рассылку заново.", show_alert=True)
+        return
+    await state.set_state(AdminBroadcast.waiting_for_text_confirm)
     await _enter_segment_filter(
         callback_query,
         state,
         db,
-        data.get('broadcast_preview') or data.get('broadcast_text', ''),
+        broadcast_preview,
     )
 
 
-@router.callback_query(lambda c: c.data == 'bc_edit_text', StateFilter(AdminBroadcast.waiting_for_text_confirm))
+@router.callback_query(lambda c: c.data == 'bc_edit_text')
 async def admin_broadcast_edit_text(callback_query: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback_query.from_user.id):
         await callback_query.answer()
         return
     await state.set_state(AdminBroadcast.waiting_for_text)
+    await mark_pending_broadcast(callback_query.from_user.id)
     await callback_query.message.edit_text(
         ADMIN_BROADCAST_EDIT_TEXT,
         reply_markup=cancel_fsm_keyboard,
@@ -513,36 +541,38 @@ async def bc_send(callback_query: types.CallbackQuery, state: FSMContext, db: Da
         else []
     )
     await state.clear()
+    await clear_pending_broadcast(callback_query.from_user.id)
 
     sent = 0
-    for student_id in selected_ids:
-        try:
-            if broadcast_mode == "copy" and source_chat_id and source_message_id:
-                await callback_query.bot.copy_message(
-                    chat_id=student_id,
-                    from_chat_id=source_chat_id,
-                    message_id=source_message_id,
-                    reply_markup=make_teacher_reply_keyboard("broadcast"),
-                )
-            else:
-                student = students_cache.get(student_id)
-                personalized_text = _resolve_broadcast_text(
-                    broadcast_kind,
-                    student.get("speech_style") if student else None,
-                    broadcast_text,
-                )
-                reply_markup = make_teacher_reply_keyboard("broadcast")
-                if reschedule_slots:
-                    personalized_text += "\n\nВыберите удобный вариант переноса кнопкой ниже."
-                    reply_markup = make_reschedule_offer_keyboard(reschedule_slots)
-                await callback_query.bot.send_message(
-                    student_id,
-                    personalized_text,
-                    reply_markup=reply_markup,
-                )
-            sent += 1
-        except Exception:
-            continue
+    async with with_chat_action(callback_query, "typing"):
+        for student_id in selected_ids:
+            try:
+                if broadcast_mode == "copy" and source_chat_id and source_message_id:
+                    await callback_query.bot.copy_message(
+                        chat_id=student_id,
+                        from_chat_id=source_chat_id,
+                        message_id=source_message_id,
+                        reply_markup=make_teacher_reply_keyboard("broadcast"),
+                    )
+                else:
+                    student = students_cache.get(student_id)
+                    personalized_text = _resolve_broadcast_text(
+                        broadcast_kind,
+                        student.get("speech_style") if student else None,
+                        broadcast_text,
+                    )
+                    reply_markup = make_teacher_reply_keyboard("broadcast")
+                    if reschedule_slots:
+                        personalized_text += "\n\nВыберите удобный вариант переноса кнопкой ниже."
+                        reply_markup = make_reschedule_offer_keyboard(reschedule_slots)
+                    await callback_query.bot.send_message(
+                        student_id,
+                        personalized_text,
+                        reply_markup=reply_markup,
+                    )
+                sent += 1
+            except Exception:
+                continue
 
     await callback_query.message.edit_text(
         build_broadcast_send_result_text(sent, len(selected_ids)),

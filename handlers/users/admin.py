@@ -6,6 +6,7 @@ from datetime import datetime
 from aiogram import Router, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers.users.admin_sections.common import (
     get_message_origin,
@@ -34,7 +35,7 @@ from keyboards.inline import (
     make_lessons_manage_keyboard,
     make_teacher_reply_keyboard,
 )
-from states.registration import AdminAddLesson, AdminManageLessons
+from states.registration import AdminAddLesson, AdminBlockTelegramId, AdminManageLessons
 from utils.brand import brand_tone_label, get_brand_tone, set_brand_tone
 from utils.db_api.postgresql import Database
 from utils.google_calendar import (
@@ -51,6 +52,7 @@ from utils.preview_mode import (
     set_admin_preview_session,
 )
 from utils.speech import choose_form
+from utils.telegram_actions import with_chat_action
 from utils.ui_text import (
     ADMIN_ADD_LESSON_INVALID_TEXT,
     ADMIN_ADD_LESSON_PROMPT_TEXT,
@@ -133,6 +135,20 @@ def _parse_admin_id_command(message_text: str | None) -> tuple[int | None, str]:
     return telegram_id, reason
 
 
+def _parse_admin_block_payload(message_text: str | None) -> tuple[int | None, str]:
+    parts = (message_text or "").strip().split(maxsplit=1)
+    if not parts:
+        return None, ""
+    try:
+        telegram_id = int(parts[0])
+    except ValueError:
+        return None, ""
+    if telegram_id <= 0:
+        return None, ""
+    reason = parts[1].strip() if len(parts) > 1 else ""
+    return telegram_id, reason
+
+
 def _fix_utf8_mojibake(value: str) -> str:
     try:
         return value.encode("cp1251").decode("utf-8")
@@ -152,6 +168,55 @@ def _format_block_entry_label(item: dict | None) -> str:
     if role:
         return _q(role)
     return "нет в базе"
+
+
+def _format_blocked_ids_text(rows: list[dict]) -> str:
+    if not rows:
+        return "🚫 <b>Блокировки по Telegram ID</b>\n\nСписок пока пуст."
+
+    lines = [
+        "🚫 <b>Блокировки по Telegram ID</b>",
+        "",
+        f"Показано: <b>{len(rows)}</b>",
+    ]
+    for index, row in enumerate(rows, 1):
+        blocked_at = row.get("blocked_at")
+        blocked_at_label = blocked_at.strftime("%d.%m.%Y %H:%M") if blocked_at else "-"
+        role = row.get("role") or "нет профиля"
+        status = "неактивен" if row.get("is_active") is False else "активен"
+        reason = row.get("reason") or "без причины"
+        lines.extend([
+            "",
+            f"{index}. <code>{row['telegram_id']}</code>  |  <b>{_format_block_entry_label(row)}</b>",
+            f"Статус профиля: <b>{_q(role)}</b>, {status}",
+            f"Когда: <b>{blocked_at_label}</b>",
+            f"Причина: <b>{_q(reason)}</b>",
+        ])
+    return "\n".join(lines)
+
+
+def _admin_blocked_keyboard(rows: list[dict]) -> InlineKeyboardMarkup:
+    keyboard_rows = [
+        [InlineKeyboardButton(text="➕ Заблокировать ID", callback_data="admin:blocked:add")]
+    ]
+    for row in rows:
+        telegram_id = int(row["telegram_id"])
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=f"✅ Снять блокировку {telegram_id}",
+                callback_data=f"admin:blocked:unblock:{telegram_id}",
+            )
+        ])
+    keyboard_rows.append([InlineKeyboardButton(text="◀️ К сервису", callback_data="admin:cat:service")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+
+async def _render_admin_blocked(message: types.Message, db: Database):
+    rows = list(await db.get_blocked_telegram_ids(limit=20) or [])
+    await message.edit_text(
+        _format_blocked_ids_text(rows),
+        reply_markup=_admin_blocked_keyboard(rows),
+    )
 
 
 async def render_admin_home(message: types.Message, db: Database):
@@ -308,7 +373,8 @@ async def command_sync(message: types.Message, db: Database):
         return
     await message.answer(ADMIN_SYNC_IN_PROGRESS_TEXT)
     try:
-        report = await sync_calendar_to_db(db)
+        async with with_chat_action(message, "typing"):
+            report = await sync_calendar_to_db(db)
         await message.answer(format_sync_report_html(report))
     except Exception as e:
         logger.error(f"Ошибка синхронизации Calendar: {e}")
@@ -420,29 +486,99 @@ async def command_blocked(message: types.Message, db: Database):
         return
 
     rows = list(await db.get_blocked_telegram_ids(limit=20) or [])
-    if not rows:
-        await message.answer("🚫 <b>Блокировки по Telegram ID</b>\n\nСписок пока пуст.")
+    await message.answer(_format_blocked_ids_text(rows), reply_markup=_admin_blocked_keyboard(rows))
+
+
+@router.callback_query(lambda c: c.data == "admin:blocked")
+async def admin_blocked(callback_query: types.CallbackQuery, db: Database):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await _render_admin_blocked(callback_query.message, db)
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == "admin:blocked:add", StateFilter("*"))
+async def admin_blocked_add_start(callback_query: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    await state.clear()
+    await state.set_state(AdminBlockTelegramId.waiting_for_target)
+    await callback_query.message.edit_text(
+        "🚫 <b>Заблокировать Telegram ID</b>\n\n"
+        "Отправьте ID и причину одним сообщением:\n"
+        "<code>123456789 причина</code>",
+        reply_markup=make_back_button_keyboard("◀️ К блокировкам", "admin:blocked"),
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminBlockTelegramId.waiting_for_target))
+async def admin_blocked_add_text(message: types.Message, state: FSMContext, db: Database):
+    if not _is_admin(message.from_user.id):
+        await state.clear()
         return
 
+    telegram_id, reason = _parse_admin_block_payload(message.text)
+    if telegram_id is None:
+        await message.answer(
+            "⚠️ Отправьте Telegram ID и, при необходимости, причину:\n"
+            "<code>123456789 причина</code>",
+            reply_markup=make_back_button_keyboard("◀️ К блокировкам", "admin:blocked"),
+        )
+        return
+    if telegram_id == message.from_user.id:
+        await message.answer(
+            "⚠️ Свой Telegram ID блокировать нельзя.",
+            reply_markup=make_back_button_keyboard("◀️ К блокировкам", "admin:blocked"),
+        )
+        return
+
+    existing_user = await db.get_user(telegram_id)
+    was_blocked = await db.is_telegram_id_blocked(telegram_id)
+    await db.block_telegram_id(
+        telegram_id,
+        blocked_by=message.from_user.id,
+        reason=reason or None,
+    )
+    await state.clear()
+
     lines = [
-        "🚫 <b>Блокировки по Telegram ID</b>",
+        "🚫 <b>ID заблокирован</b>",
         "",
-        f"Показано: <b>{len(rows)}</b>",
+        f"Telegram ID: <code>{telegram_id}</code>",
+        f"Профиль: <b>{_format_block_entry_label(existing_user)}</b>",
     ]
-    for index, row in enumerate(rows, 1):
-        blocked_at = row.get("blocked_at")
-        blocked_at_label = blocked_at.strftime("%d.%m.%Y %H:%M") if blocked_at else "-"
-        role = row.get("role") or "нет профиля"
-        status = "неактивен" if row.get("is_active") is False else "активен"
-        reason = row.get("reason") or "без причины"
-        lines.extend([
-            "",
-            f"{index}. <code>{row['telegram_id']}</code>  |  <b>{_format_block_entry_label(row)}</b>",
-            f"Статус профиля: <b>{_q(role)}</b>, {status}",
-            f"Когда: <b>{blocked_at_label}</b>",
-            f"Причина: <b>{_q(reason)}</b>",
-        ])
-    await message.answer("\n".join(lines))
+    if reason:
+        lines.append(f"Причина: <b>{_q(reason)}</b>")
+    if was_blocked:
+        lines.append("Запись обновлена.")
+    elif existing_user and existing_user.get("is_active") is not False:
+        lines.append("Профиль дополнительно деактивирован.")
+    await message.answer("\n".join(lines), reply_markup=make_back_button_keyboard("◀️ К блокировкам", "admin:blocked"))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:blocked:unblock:"))
+async def admin_blocked_unblock(callback_query: types.CallbackQuery, db: Database):
+    if not _is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    try:
+        telegram_id = int(callback_query.data.split(":")[3])
+    except (IndexError, ValueError):
+        await callback_query.answer("Некорректный ID.", show_alert=True)
+        return
+
+    block_entry = await db.get_telegram_block(telegram_id)
+    if not block_entry:
+        await callback_query.answer("Этой блокировки уже нет.", show_alert=True)
+        await _render_admin_blocked(callback_query.message, db)
+        return
+
+    await db.unblock_telegram_id(telegram_id)
+    await _render_admin_blocked(callback_query.message, db)
+    await callback_query.answer("Блокировка снята.")
 
 
 @router.callback_query(lambda c: c.data in {'back_to_admin', 'admin:home'}, StateFilter('*'))

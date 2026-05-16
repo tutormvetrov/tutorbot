@@ -17,6 +17,7 @@ from keyboards.inline import (
 from states.registration import AdminStudyPlan
 from utils.db_api.postgresql import Database
 from utils.pdf_learning_plan import parse_learning_plan_pdf
+from utils.telegram_actions import with_chat_action
 from utils.ui_text import (
     build_action_result_text,
     build_admin_study_plan_preview_text,
@@ -160,11 +161,12 @@ async def admin_study_plan_pdf_received(message: types.Message, state: FSMContex
         return
 
     try:
-        tg_file = await message.bot.get_file(document.file_id)
-        suffix = Path(file_name or "plan.pdf").suffix or ".pdf"
-        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-            await message.bot.download_file(tg_file.file_path, destination=tmp.name)
-            parsed = parse_learning_plan_pdf(tmp.name)
+        async with with_chat_action(message, "typing"):
+            tg_file = await message.bot.get_file(document.file_id)
+            suffix = Path(file_name or "plan.pdf").suffix or ".pdf"
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                await message.bot.download_file(tg_file.file_path, destination=tmp.name)
+                parsed = parse_learning_plan_pdf(tmp.name)
     except Exception as exc:
         logger.warning("Failed to parse learning plan PDF: %s", exc, exc_info=True)
         await message.answer(
@@ -239,30 +241,31 @@ async def admin_study_plan_publish(callback_query: types.CallbackQuery, state: F
         return
 
     student_id = int(data["student_id"])
-    plan_id = await db.publish_learning_plan(
-        student_id,
-        summary=summary,
-        parsed_text=parsed.get("text") or "",
-        parser_status=parsed.get("status") or "ok",
-        parser_warnings="\n".join(parsed.get("warnings") or []),
-        file_id=data["pdf_file_id"],
-        file_unique_id=data.get("pdf_file_unique_id"),
-        file_name=data.get("pdf_file_name"),
-        mime_type=data.get("pdf_mime_type"),
-        created_by=callback_query.from_user.id,
-    )
+    async with with_chat_action(callback_query, "typing"):
+        plan_id = await db.publish_learning_plan(
+            student_id,
+            summary=summary,
+            parsed_text=parsed.get("text") or "",
+            parser_status=parsed.get("status") or "ok",
+            parser_warnings="\n".join(parsed.get("warnings") or []),
+            file_id=data["pdf_file_id"],
+            file_unique_id=data.get("pdf_file_unique_id"),
+            file_name=data.get("pdf_file_name"),
+            mime_type=data.get("pdf_mime_type"),
+            created_by=callback_query.from_user.id,
+        )
 
-    recipients = await db.get_study_plan_recipients(student_id)
-    for recipient_id in recipients:
-        try:
-            await callback_query.bot.send_message(
-                recipient_id,
-                "📌 <b>Учебный план обновлён</b>\n\n"
-                "Я добавил новый план и чек-лист подготовки к ближайшему уроку.",
-                reply_markup=make_study_plan_open_keyboard(),
-            )
-        except Exception as exc:
-            logger.warning("Failed to notify study plan recipient %s: %s", recipient_id, exc)
+        recipients = await db.get_study_plan_recipients(student_id)
+        for recipient_id in recipients:
+            try:
+                await callback_query.bot.send_message(
+                    recipient_id,
+                    "📌 <b>Учебный план обновлён</b>\n\n"
+                    "Я добавил новый план и чек-лист подготовки к ближайшему уроку.",
+                    reply_markup=make_study_plan_open_keyboard(),
+                )
+            except Exception as exc:
+                logger.warning("Failed to notify study plan recipient %s: %s", recipient_id, exc)
 
     await state.clear()
     await restore_admin_view(

@@ -2,7 +2,11 @@ import secrets
 from datetime import date, datetime, timedelta
 
 from data.config import normalize_person_name
-from utils.text_utils import extract_student_name
+from utils.text_utils import (
+    build_pair_display_title,
+    extract_student_name,
+    parse_pair_name_input,
+)
 
 
 # Sentinel-дата для бессрочной заморозки. Любой `frozen_until > NOW()` считается
@@ -181,6 +185,40 @@ class DatabaseUserMixin:
             telegram_id, value, execute=True,
         )
 
+    async def update_user_full_name(self, telegram_id: int, full_name: str):
+        value = " ".join((full_name or "").split()).strip()
+        if not value:
+            raise ValueError("full_name must not be empty")
+        await self.execute(
+            "UPDATE users SET full_name = $2 WHERE telegram_id = $1",
+            telegram_id, value, execute=True,
+        )
+        await self.execute(
+            """
+            UPDATE student_group_members
+            SET member_name = $2
+            WHERE student_id = $1
+              AND member_role = 'primary'
+            """,
+            telegram_id,
+            value,
+            execute=True,
+        )
+        pairs = await self.execute(
+            """
+            SELECT id
+            FROM student_groups
+            WHERE primary_student_id = $1
+              AND group_type = 'pair'
+              AND is_active = true
+              AND COALESCE(naming_mode, 'auto') = 'auto'
+            """,
+            telegram_id,
+            fetch=True,
+        )
+        for pair in pairs or []:
+            await self.refresh_student_pair_title(int(pair["id"]))
+
     async def get_all_students(self):
         return await self.execute(
             """
@@ -319,7 +357,12 @@ class DatabaseUserMixin:
         if not clean_primary or not clean_partner:
             raise ValueError("Both pair members must have names.")
 
-        pair_title = title or f"{clean_primary} + {clean_partner}"
+        parsed = parse_pair_name_input(clean_primary, clean_partner)
+        clean_primary = parsed["primary_name"] or clean_primary
+        clean_partner = parsed["partner_name"] or clean_partner
+        pair_title = title or parsed["title"] or f"{clean_primary} + {clean_partner}"
+        common_surname = parsed.get("common_surname")
+        naming_mode = "manual" if title else "auto"
         group_id = await self.execute(
             """
             INSERT INTO student_groups (
@@ -328,14 +371,18 @@ class DatabaseUserMixin:
                 primary_student_id,
                 balance_mode,
                 homework_mode,
-                onboarding_source
+                onboarding_source,
+                naming_mode,
+                common_surname
             )
-            VALUES ('pair', $1, $2, 'shared', 'shared', $3)
+            VALUES ('pair', $1, $2, 'shared', 'shared', $3, $4, $5)
             RETURNING id
             """,
             pair_title,
             primary_student_id,
             onboarding_source,
+            naming_mode,
+            common_surname,
             fetchval=True,
         )
         await self.execute(
@@ -358,6 +405,78 @@ class DatabaseUserMixin:
             execute=True,
         )
         return int(group_id)
+
+    async def refresh_student_pair_title(self, group_id: int):
+        pair = await self.get_student_pair(group_id)
+        if not pair or pair.get("naming_mode") == "manual":
+            return pair.get("title") if pair else None
+        members = [str(name).strip() for name in pair.get("member_names") or [] if str(name).strip()]
+        partner = next((name for name in members if name != pair.get("primary_student_name")), "")
+        if not partner:
+            partner = (pair.get("partner_names") or "").split(",")[0].strip()
+        title = build_pair_display_title(
+            pair.get("primary_student_name") or "",
+            partner,
+            common_surname=pair.get("common_surname"),
+        )
+        if not title:
+            return pair.get("title")
+        await self.execute(
+            "UPDATE student_groups SET title = $2 WHERE id = $1",
+            group_id,
+            title,
+            execute=True,
+        )
+        return title
+
+    async def set_student_pair_common_surname(self, group_id: int, common_surname: str | None):
+        value = " ".join((common_surname or "").split()).strip() or None
+        await self.execute(
+            """
+            UPDATE student_groups
+            SET common_surname = $2,
+                naming_mode = 'auto'
+            WHERE id = $1
+            """,
+            group_id,
+            value,
+            execute=True,
+        )
+        return await self.refresh_student_pair_title(group_id)
+
+    async def update_student_pair_title_manual(self, group_id: int, title: str):
+        value = " ".join((title or "").split()).strip()
+        if not value:
+            raise ValueError("title must not be empty")
+        await self.execute(
+            """
+            UPDATE student_groups
+            SET title = $2,
+                naming_mode = 'manual'
+            WHERE id = $1
+            """,
+            group_id,
+            value,
+            execute=True,
+        )
+        return value
+
+    async def update_student_pair_partner_name(self, group_id: int, member_name: str):
+        value = " ".join((member_name or "").split()).strip()
+        if not value:
+            raise ValueError("member_name must not be empty")
+        await self.execute(
+            """
+            UPDATE student_group_members
+            SET member_name = $2
+            WHERE group_id = $1
+              AND member_role <> 'primary'
+            """,
+            group_id,
+            value,
+            execute=True,
+        )
+        return await self.refresh_student_pair_title(group_id)
 
     def _pair_select_sql(self, where_clause: str) -> str:
         return f"""
@@ -831,6 +950,16 @@ class DatabaseUserMixin:
             WHERE u.role = 'student'
               AND u.is_active = true
               AND COALESCE(u.is_internal_account, false) = false
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM student_group_members sgm
+                  JOIN student_groups sg
+                    ON sg.id = sgm.group_id
+                   AND sg.group_type = 'pair'
+                   AND sg.is_active = true
+                  WHERE sgm.student_id = u.telegram_id
+                    AND sgm.member_role <> 'primary'
+              )
             ORDER BY u.full_name
             """,
             fetch=True,

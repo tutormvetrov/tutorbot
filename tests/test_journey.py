@@ -137,5 +137,18 @@ class JourneyHomeIntegrationTest(unittest.TestCase):
         self.assertIn("Прогресс:", text)
 
 
+class JourneyNavigationTest(unittest.TestCase):
+    def test_student_more_menu_has_goal_entry(self):
+        from keyboards.user import student_more_keyboard
+
+        callbacks = [
+            button.callback_data
+            for row in student_more_keyboard.inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("goal:set", callbacks)
+
+
 if __name__ == "__main__":
     unittest.main()

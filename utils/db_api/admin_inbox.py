@@ -31,6 +31,17 @@ class DatabaseAdminInboxMixin:
             fetch=True,
         )
 
+    async def get_inbox_event(self, event_id: int):
+        return await self.execute(
+            """
+            SELECT id, kind, payload, created_at, read_at, handled_at, handled_by
+            FROM admin_inbox
+            WHERE id = $1
+            """,
+            event_id,
+            fetchrow=True,
+        )
+
     async def mark_inbox_read(self, event_id: int, handled_by: int) -> None:
         await self.execute(
             """

@@ -35,6 +35,7 @@ from utils.reschedule import decode_reschedule_slot, format_reschedule_slot_labe
 from utils.time import business_today
 from utils.ui_text import (
     build_action_result_text,
+    build_help_text,
     build_more_screen_text,
     build_no_show_confirm_text,
     build_no_show_notification_text,
@@ -316,6 +317,15 @@ async def process_more(callback_query: types.CallbackQuery, db: Database):
         build_more_screen_text(role),
         keyboard,
         preview,
+    )
+    await callback_query.answer()
+
+
+@router.callback_query(lambda c: c.data == 'help')
+async def process_help(callback_query: types.CallbackQuery):
+    await callback_query.message.edit_text(
+        build_help_text(),
+        reply_markup=back_to_menu_keyboard,
     )
     await callback_query.answer()
 

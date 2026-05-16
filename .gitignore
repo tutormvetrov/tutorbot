@@ -22,6 +22,7 @@ backups/
 data/runtime_metrics.jsonl
 data/ops_status.json
 data/fsm_storage.json
+data/pending_admin_actions.json
 data/debug_context.jsonl
 data/debug_media/
 AGENT_CONTEXT.md

@@ -260,4 +260,5 @@ def make_payment_autoconfirm_keyboard(student_id: int, amount: float, lessons: i
             _btn("✅ Подтвердить", f"payment_auto:confirm:{student_id}:{amount}:{lessons}"),
             _btn("✏️ Изменить кол-во", f"payment_auto:edit:{student_id}:{amount}"),
         ],
+        [_btn("❌ Отмена", "cancel_fsm")],
     ])

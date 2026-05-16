@@ -38,17 +38,24 @@ class DatabasePaymentMixin:
                     payment_id,
                 )
 
-    async def add_payment(self, student_id: int, amount: float, lessons_count: int) -> int:
+    async def add_payment(
+        self,
+        student_id: int,
+        amount: float,
+        lessons_count: int,
+        payer_id: int | None = None,
+    ) -> int:
+        payer_id = payer_id or student_id
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 payment_id = await conn.fetchval(
                     """
                     INSERT INTO payments
                         (payer_id, student_id, amount, lessons_count, lessons_remaining, status, payment_date)
-                    VALUES ($1, $1, $2, $3, $3, 'confirmed', CURRENT_TIMESTAMP)
+                    VALUES ($1, $2, $3, $4, $4, 'confirmed', CURRENT_TIMESTAMP)
                     RETURNING id
                     """,
-                    student_id, amount, lessons_count,
+                    payer_id, student_id, amount, lessons_count,
                 )
                 await conn.execute(
                     """

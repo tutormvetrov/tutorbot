@@ -220,3 +220,170 @@ def derive_preferred_name(full_name: str | None) -> str:
         return a
     # 3+ tokens: official Russian order is Surname-First-Patronymic → token #2.
     return tokens[1]
+
+
+# Pair-name parsing
+
+
+def _clean_name(value: str | None) -> str:
+    return " ".join((value or "").strip().split())
+
+
+def _split_pair_parts(value: str) -> list[str]:
+    raw = _clean_name(value)
+    if not raw:
+        return []
+    if "+" in raw:
+        return [_clean_name(part) for part in raw.split("+") if _clean_name(part)]
+    parts = re.split(r"\s+и\s+", raw, maxsplit=1, flags=re.IGNORECASE)
+    return [_clean_name(part) for part in parts if _clean_name(part)]
+
+
+def _singular_surname(value: str | None) -> str:
+    token = _clean_name(value)
+    if not token:
+        return ""
+    low = token.lower().replace("ё", "е")
+    if low.endswith("ские"):
+        return token[:-2] + "й"
+    if low.endswith("цкие"):
+        return token[:-2] + "й"
+    if low.endswith("овы") or low.endswith("евы") or low.endswith("ёвы") or low.endswith("ины"):
+        return token[:-1]
+    if low.endswith("ые") or low.endswith("ие"):
+        return token[:-2]
+    if low.endswith("ова") or low.endswith("ева") or low.endswith("ёва") or low.endswith("ина"):
+        return token[:-1]
+    if low.endswith("ая"):
+        return token[:-2] + "ий"
+    return token
+
+
+def family_surname_label(surname: str | None) -> str:
+    base = _singular_surname(surname)
+    if not base:
+        return ""
+    low = base.lower().replace("ё", "е")
+    if low.endswith("ский") or low.endswith("цкий"):
+        return base[:-2] + "ие"
+    if low.endswith("ой"):
+        return base[:-2] + "ые"
+    if low.endswith(("ов", "ев", "ёв", "ин", "ын")):
+        return base + "ы"
+    return base
+
+
+def parse_person_name(value: str | None, *, default_surname: str | None = None) -> dict:
+    raw = _clean_name(value)
+    tokens = raw.split()
+    if not tokens:
+        return {"raw": "", "given": "", "surname": _clean_name(default_surname), "display": ""}
+    if len(tokens) == 1:
+        surname = _clean_name(default_surname)
+        return {"raw": raw, "given": tokens[0], "surname": surname, "display": raw}
+
+    first, second = tokens[0], tokens[1]
+    first_is_surname = _looks_like_surname(first)
+    second_is_surname = _looks_like_surname(second)
+    if first_is_surname and not second_is_surname:
+        surname = _singular_surname(first)
+        display_surname = first
+        given = second
+    elif second_is_surname and not first_is_surname:
+        surname = _singular_surname(second)
+        display_surname = second
+        given = first
+    elif second_is_surname:
+        surname = _singular_surname(second)
+        display_surname = second
+        given = first
+    else:
+        surname = _singular_surname(first)
+        display_surname = first
+        given = second
+
+    rest = tokens[2:]
+    display = f"{given} {display_surname}".strip()
+    if rest:
+        display = f"{display} {' '.join(rest)}"
+    return {"raw": raw, "given": given, "surname": surname, "display": display}
+
+
+def build_pair_display_title(
+    primary_name: str,
+    partner_name: str,
+    *,
+    common_surname: str | None = None,
+) -> str:
+    primary = parse_person_name(primary_name)
+    surname = _singular_surname(common_surname)
+    partner = parse_person_name(partner_name, default_surname=surname or primary.get("surname"))
+    primary_given = primary.get("given") or _clean_name(primary_name)
+    partner_given = partner.get("given") or _clean_name(partner_name)
+
+    if surname:
+        family = family_surname_label(surname)
+        if family and primary_given and partner_given:
+            return f"{family} {primary_given} и {partner_given}"
+
+    p_surname = primary.get("surname") or ""
+    s_surname = partner.get("surname") or ""
+    if p_surname and s_surname and normalize_pair_token(p_surname) == normalize_pair_token(s_surname):
+        family = family_surname_label(p_surname)
+        if family and primary_given and partner_given:
+            return f"{family} {primary_given} и {partner_given}"
+
+    left = primary.get("display") or _clean_name(primary_name)
+    right = partner.get("display") or _clean_name(partner_name)
+    if left and right:
+        return f"{left} и {right}"
+    return left or right
+
+
+def normalize_pair_token(value: str | None) -> str:
+    return _singular_surname(value).lower().replace("ё", "е")
+
+
+def parse_pair_name_input(primary_name: str, partner_input: str) -> dict:
+    primary_clean = _clean_name(primary_name)
+    partner_clean = _clean_name(partner_input)
+    parts = _split_pair_parts(partner_clean)
+
+    common_surname = ""
+    primary_result = primary_clean
+    partner_result = partner_clean
+
+    if len(parts) >= 2:
+        first_tokens = parts[0].split()
+        if len(first_tokens) == 1 and not _looks_like_surname(first_tokens[0]):
+            primary_result = parts[0]
+            partner_result = parts[1]
+        elif len(first_tokens) >= 3 and not _looks_like_surname(first_tokens[0]):
+            common_surname = _singular_surname(first_tokens[0])
+            primary_result = first_tokens[1]
+            partner_result = parts[1]
+        else:
+            primary_result = parts[0]
+            partner_result = parts[1]
+            primary_person = parse_person_name(primary_result)
+            partner_person = parse_person_name(partner_result)
+            if primary_person.get("surname") and not partner_person.get("surname"):
+                common_surname = primary_person["surname"]
+    else:
+        primary_person = parse_person_name(primary_clean)
+        partner_person = parse_person_name(partner_clean, default_surname=primary_person.get("surname"))
+        if primary_person.get("surname") and not parse_person_name(partner_clean).get("surname"):
+            common_surname = primary_person["surname"]
+        primary_result = primary_clean
+        partner_result = partner_person.get("raw") or partner_clean
+
+    if common_surname:
+        partner_result = parse_person_name(partner_result, default_surname=common_surname).get("given") or partner_result
+
+    title = build_pair_display_title(primary_result, partner_result, common_surname=common_surname)
+    return {
+        "primary_name": primary_result,
+        "partner_name": partner_result,
+        "common_surname": common_surname or None,
+        "title": title,
+    }

@@ -8,7 +8,8 @@ from typing import Mapping
 
 _HTML_BREAK_RE = re.compile(r"(?i)<\s*br\s*/?\s*>")
 _HTML_BLOCK_CLOSE_RE = re.compile(r"(?i)</\s*(?:p|div|li|ul|ol|blockquote|section|article|h[1-6])\s*>")
-_HTML_LINK_RE = re.compile(r'(?is)<a\b[^>]*>(.*?)</a>')
+_HTML_LINK_RE = re.compile(r'(?is)<a\b([^>]*)>(.*?)</a>')
+_HTML_HREF_RE = re.compile(r'(?is)\bhref\s*=\s*["\']([^"\']+)["\']')
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
 _NUMBERED_BLOCK_RE = re.compile(r"^\s*(?:\d+[\).]?|[-•])\s+")
@@ -24,6 +25,7 @@ _IGNORE_RESOURCE_RE = re.compile(
     r"сайт|карточк|словар|vocabulaire|видео|ресурс"
     r")\b"
 )
+_VOCABULARY_RE = re.compile(r"(?i)\b(?:le\s+)?(?:vocabulary|vocabulaire|словар[ья]?)\b")
 _PAGE_RE = re.compile(r"(?i)\b(?:pages?|pp?\.?|стр\.?)\s*(\d+)(?:\s*[-–—]\s*(\d+))?")
 _UNIT_RE = re.compile(r"(?i)\bunit\s+([A-Za-z0-9-]+)")
 _CHAPTER_RE = re.compile(r"(?i)\bchapter\s+([A-Za-z0-9-]+)")
@@ -69,7 +71,7 @@ def homework_html_to_plain_text(source: str | None) -> str:
     text = str(source)
     text = _HTML_BREAK_RE.sub("\n", text)
     text = _HTML_BLOCK_CLOSE_RE.sub("\n", text)
-    text = _HTML_LINK_RE.sub(lambda match: match.group(1) or "", text)
+    text = _HTML_LINK_RE.sub(_replace_html_link, text)
     text = _HTML_TAG_RE.sub(" ", text)
     text = std_html.unescape(text)
     text = text.replace("\xa0", " ")
@@ -140,10 +142,15 @@ def parse_homework_material_block(block: str) -> dict | None:
         return None
 
     has_progress = bool(_PROGRESS_RE.search(clean_block))
-    if _IGNORE_RESOURCE_RE.search(clean_block) and not _BOOK_KEYWORD_RE.search(clean_block) and not has_progress:
+    is_vocabulary = bool(_VOCABULARY_RE.search(clean_block))
+    if _IGNORE_RESOURCE_RE.search(clean_block) and not _BOOK_KEYWORD_RE.search(clean_block) and not has_progress and not is_vocabulary:
         return None
 
-    material_title, material_key = _extract_material_title(clean_block, has_progress=has_progress)
+    if is_vocabulary:
+        material_title = "Le vocabulaire" if re.search(r"(?i)\bvocabulaire\b", clean_block) else "Vocabulary"
+        material_key = normalize_material_key(material_title)
+    else:
+        material_title, material_key = _extract_material_title(clean_block, has_progress=has_progress)
     if not material_title or not material_key:
         return None
 
@@ -151,7 +158,7 @@ def parse_homework_material_block(block: str) -> dict | None:
     return {
         "material_key": material_key,
         "material_title": material_title,
-        "material_kind": "book",
+        "material_kind": "vocabulary" if is_vocabulary else "book",
         "page_from": progress["page_from"],
         "page_to": progress["page_to"],
         "unit_label": progress["unit_label"],
@@ -160,6 +167,16 @@ def parse_homework_material_block(block: str) -> dict | None:
         "exercise_label": progress["exercise_label"],
         "raw_fragment": clean_block,
     }
+
+
+def _replace_html_link(match: re.Match[str]) -> str:
+    attrs = match.group(1) or ""
+    label = match.group(2) or ""
+    href_match = _HTML_HREF_RE.search(attrs)
+    href = href_match.group(1).strip() if href_match else ""
+    if href and href not in label:
+        return f"{label} {href}"
+    return label
 
 
 def material_progress_label(item: Mapping[str, object] | None) -> str:

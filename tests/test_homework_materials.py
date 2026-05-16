@@ -30,25 +30,33 @@ class HomeworkMaterialsParserTest(unittest.TestCase):
 
         mentions = parse_homework_material_mentions(html)
 
-        self.assertEqual(len(mentions), 2)
+        self.assertEqual(len(mentions), 3)
         titles = [item["material_title"] for item in mentions]
         self.assertTrue(any("Le livre d’étudiant" in title for title in titles))
         self.assertTrue(any("Le cahier d’activités" in title for title in titles))
+        self.assertTrue(any("Le vocabulaire" in title for title in titles))
         self.assertTrue(any("Cosmopolite 1" in title for title in titles))
         self.assertEqual(mentions[0]["page_from"], 69)
         self.assertEqual(mentions[0]["exercise_label"], "Ex. 2(c)")
         self.assertEqual(mentions[1]["page_from"], 44)
         self.assertEqual(mentions[1]["page_to"], 45)
         self.assertEqual(mentions[1]["exercise_label"], "Ex. 1-4")
+        self.assertEqual(mentions[2]["material_kind"], "vocabulary")
+        self.assertIn("https://example.com", mentions[2]["raw_fragment"])
 
-    def test_parser_ignores_non_book_resources(self):
+    def test_parser_extracts_vocabulary_resources_with_links(self):
         html = (
             "3. Le vocabulaire.<br>"
             "<a href=\"https://knowt.com\">Apprenez de nouvelles expressions ici</a><br><br>"
             "4. Flashcards on Quizlet."
         )
 
-        self.assertEqual(parse_homework_material_mentions(html), [])
+        mentions = parse_homework_material_mentions(html)
+
+        self.assertEqual(len(mentions), 1)
+        self.assertEqual(mentions[0]["material_title"], "Le vocabulaire")
+        self.assertEqual(mentions[0]["material_kind"], "vocabulary")
+        self.assertIn("https://knowt.com", mentions[0]["raw_fragment"])
 
     def test_hint_generation_covers_page_unit_and_title_only_cases(self):
         page_hint = build_next_homework_hint(
@@ -186,6 +194,27 @@ class HomeworkDbMixinTest(unittest.IsolatedAsyncioTestCase):
         commands = [command for command, _, _ in db.executed]
         self.assertFalse(any("INSERT INTO homework_material_mentions" in command for command in commands))
         self.assertTrue(any("UPDATE homework SET materials_parsed_at = NOW()" in command for command in commands))
+
+    async def test_template_materials_query_selects_top_materials_with_latest_mentions(self):
+        class FakeDB(DatabaseHomeworkMixin):
+            def __init__(self):
+                self.executed = []
+
+            async def execute(self, command, *args, **kwargs):
+                self.executed.append((command, args, kwargs))
+                return []
+
+        db = FakeDB()
+
+        await db.get_homework_template_materials(555, limit=3)
+
+        command, args, kwargs = db.executed[0]
+        self.assertIn("ROW_NUMBER() OVER", command)
+        self.assertIn("mentions_count", command)
+        self.assertIn("raw_fragment", command)
+        self.assertIn("ORDER BY mentions_count DESC", command)
+        self.assertEqual(args, (555, 3))
+        self.assertTrue(kwargs.get("fetch"))
 
 
 if __name__ == "__main__":

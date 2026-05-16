@@ -71,8 +71,15 @@ def make_post_registration_keyboard(
     website_url: str = "",
     materials_url: str = "",
     include_level_test: bool = False,
+    guide_callback: str = "guide:menu:student",
+    include_parent_home: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
+    if include_parent_home:
+        rows.append([_btn("👨‍👩‍👧 Мои дети", "parent:home")])
+    rows.append([_btn("📞 Контакты и адрес", "contacts")])
+    if guide_callback:
+        rows.append([_btn("📥 Инструкция", guide_callback)])
     if booking_url:
         rows.append([_url_btn("📅 Записаться на пробный урок", booking_url)])
     if materials_url:
@@ -314,6 +321,7 @@ def make_admin_student_settings_keyboard(
     hw_exempt_label = "🚫 ДЗ: не задаю" if homework_exempt else "📚 ДЗ: задаю"
     hw_exempt_target = "0" if homework_exempt else "1"
     return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("✏️ ФИО", f"admin:student_full_name:{telegram_id}:{page}")],
         [_btn(f"✏️ Имя для обращения: {name_for_label}", f"admin:student_preferred_name:{telegram_id}:{page}")],
         [_btn("💳 Тариф", f"admin:student_tariff:{telegram_id}:{page}")],
         [_btn(f"⏱ Длительность урока: {lesson_duration_minutes} мин", f"admin:student_duration:{telegram_id}:{page}")],
@@ -396,6 +404,14 @@ def make_admin_pair_card_keyboard(pair: dict) -> InlineKeyboardMarkup:
             _btn("📚 Задать ДЗ", f"admin:quick:add_homework:{primary_student_id}:0:card"),
         ],
         [_btn("🔗 Ссылка для второго участника", f"admin:pair_invite:{pair['id']}")],
+        [
+            _btn("✏️ Основной участник", f"admin:pair_name:primary:{pair['id']}"),
+            _btn("✏️ Второй участник", f"admin:pair_name:partner:{pair['id']}"),
+        ],
+        [
+            _btn("👥 Общая фамилия", f"admin:pair_name:common:{pair['id']}"),
+            _btn("🏷 Название пары", f"admin:pair_name:title:{pair['id']}"),
+        ],
         [_btn("📌 Учебный план", f"admin:study_plan:{primary_student_id}:0:card")],
         [_btn("👤 Основной профиль", f"admin:student_card:{primary_student_id}:0")],
         [_btn("◀️ К парам", "admin:pairs")],

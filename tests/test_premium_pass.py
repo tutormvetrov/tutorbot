@@ -22,6 +22,7 @@ from handlers.users.admin_sections.broadcast import (
     _matches_segment_filters,
     admin_broadcast_back_preview,
     admin_broadcast_confirm_text,
+    admin_broadcast_pending_text_entered,
     admin_broadcast_select,
     admin_broadcast_start,
     admin_broadcast_text_entered,
@@ -29,8 +30,13 @@ from handlers.users.admin_sections.broadcast import (
     bc_send,
     bc_toggle_recipient,
 )
+from handlers.users.admin_sections.common import extract_broadcast_payload
 from states.registration import AdminBroadcast, FreezeConfirm
 from tests.helpers import DummyBot, DummyCallbackQuery, DummyMessage, DummyState
+from utils.pending_admin_actions import (
+    clear_pending_broadcast,
+    mark_pending_broadcast,
+)
 from utils.ui_text import build_action_result_text
 
 
@@ -308,6 +314,74 @@ class BroadcastPremiumPassTest(unittest.IsolatedAsyncioTestCase):
             bot.copied_messages[0].reply_markup.inline_keyboard[0][0].callback_data,
             "reply:broadcast",
         )
+
+    async def test_broadcast_accepts_admin_text_when_fsm_state_was_lost(self):
+        state = DummyState()
+        bot = DummyBot()
+        await mark_pending_broadcast(config.ADMIN_ID)
+        message = DummyMessage(
+            "Вам понравится! 😎",
+            user_id=config.ADMIN_ID,
+            full_name="Admin",
+            bot=bot,
+        )
+
+        await admin_broadcast_pending_text_entered(message, state)
+
+        self.assertIn("Предпросмотр рассылки", message.answers[-1])
+        self.assertIn("Вам понравится! 😎", message.answers[-1])
+        self.assertEqual(state.state.state, "AdminBroadcast:waiting_for_text_confirm")
+
+        await clear_pending_broadcast(config.ADMIN_ID)
+
+    async def test_broadcast_payload_keeps_custom_emoji_as_plain_text(self):
+        message = DummyMessage(
+            "Вам понравится! 😎",
+            user_id=config.ADMIN_ID,
+            full_name="Admin",
+        )
+        message.entities = [object()]
+        message.html_text = 'Вам понравится! <tg-emoji emoji_id="5388880957891685956">😎</tg-emoji>'
+
+        payload = extract_broadcast_payload(message)
+
+        self.assertEqual(payload["preview"], "Вам понравится! 😎")
+        self.assertNotIn("tg-emoji", payload["preview"])
+
+    async def test_broadcast_confirm_recovers_from_missing_state_filter(self):
+        state = DummyState()
+        bot = DummyBot()
+        message = DummyMessage(user_id=config.ADMIN_ID, full_name="Admin", bot=bot)
+        await state.update_data(
+            broadcast_kind="custom",
+            broadcast_mode="text",
+            broadcast_preview="Вам понравится! 😎",
+            broadcast_text="Вам понравится! 😎",
+        )
+
+        class FakeDB:
+            async def get_students_for_broadcast(self):
+                return [
+                    {"telegram_id": 11, "full_name": "Анна", "speech_style": "formal",
+                     "level": "B1", "lesson_format": "online", "balance": 1,
+                     "cached_first_lesson_date": None, "student_stage_override": None, "is_pair": False}
+                ]
+
+        callback = DummyCallbackQuery("bc_confirm", message=message, user_id=config.ADMIN_ID, bot=bot)
+
+        await admin_broadcast_confirm_text(callback, state, FakeDB())
+
+        self.assertEqual(state.state.state, "AdminBroadcast:waiting_for_segment_filter")
+        self.assertIn("Фильтр получателей", message.edits[-1])
+
+    async def test_broadcast_confirm_reports_stale_preview(self):
+        state = DummyState()
+        callback = DummyCallbackQuery("bc_confirm", user_id=config.ADMIN_ID)
+
+        await admin_broadcast_confirm_text(callback, state, db=None)
+
+        self.assertEqual(callback.answers[-1].text, "Предпросмотр устарел. Создайте рассылку заново.")
+        self.assertTrue(callback.answers[-1].show_alert)
 
     async def test_broadcast_empty_recipient_list_is_handled_softly(self):
         state = DummyState()

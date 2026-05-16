@@ -116,7 +116,7 @@ async def payment_reminder_job(bot, db: "Database", stage: str = "morning"):
 
     for student in students:
         balance = student['lesson_balance']
-        if balance == 0:
+        if balance <= 0:
             unpaid.append((student['full_name'], balance))
             try:
                 await bot.send_message(
@@ -1136,7 +1136,7 @@ async def achievement_notify_job(bot, db: "Database"):
 
 
 async def weekly_balance_reset_job(bot, db: "Database"):
-    """Воскресенье 21:59 МСК — авто-обнуление балансов перед недельным итогом.
+    """Воскресенье 22:05 МСК: авто-обнуление балансов после вечернего итога.
 
     Создаёт компенсирующую транзакцию `admin_writeoff` на ``-balance`` каждому
     подходящему ученику. Исключения:
@@ -1169,6 +1169,15 @@ async def weekly_balance_reset_job(bot, db: "Database"):
                 AND l.status IN ('active','completed')
                 AND DATE(l.lesson_date AT TIME ZONE 'Europe/Moscow') =
                     (NOW() AT TIME ZONE 'Europe/Moscow')::date
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM balance_transactions bt
+              WHERE bt.student_id = u.telegram_id
+                AND bt.type = 'payment_added'
+                AND (bt.created_at AT TIME ZONE 'Europe/Moscow') >=
+                    date_trunc('day', NOW() AT TIME ZONE 'Europe/Moscow')
+                AND (bt.created_at AT TIME ZONE 'Europe/Moscow') <=
+                    (NOW() AT TIME ZONE 'Europe/Moscow')
           )
         ORDER BY u.full_name
         """,
@@ -1269,10 +1278,10 @@ def setup_scheduler(bot, db: "Database") -> AsyncIOScheduler:
     )
     scheduler.add_job(
         weekly_balance_reset_job,
-        CronTrigger(day_of_week="sun", hour=21, minute=59),
+        CronTrigger(day_of_week="sun", hour=22, minute=5),
         args=[bot, db],
         id="weekly_balance_reset",
-        name="Авто-обнуление балансов перед недельным итогом",
+        name="Авто-обнуление балансов после вечернего итога",
     )
     scheduler.add_job(
         payment_reminder_job,

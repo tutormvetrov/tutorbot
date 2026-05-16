@@ -126,8 +126,24 @@ class AdminEditPreferredName(StatesGroup):
     waiting_for_text = State()
 
 
+class AdminEditFullName(StatesGroup):
+    waiting_for_text = State()
+
+
+class AdminEditParentFullName(StatesGroup):
+    waiting_for_text = State()
+
+
+class AdminEditPairName(StatesGroup):
+    waiting_for_text = State()
+
+
 class AdminWorkRule(StatesGroup):
     waiting_for_title = State()
     waiting_for_body = State()
     waiting_for_edit_title = State()
     waiting_for_edit_body = State()
+
+
+class AdminBlockTelegramId(StatesGroup):
+    waiting_for_target = State()

@@ -48,6 +48,8 @@ class DatabaseSchemaMixin:
                 balance_mode TEXT NOT NULL DEFAULT 'shared',
                 homework_mode TEXT NOT NULL DEFAULT 'shared',
                 onboarding_source TEXT DEFAULT 'admin',
+                naming_mode TEXT NOT NULL DEFAULT 'auto',
+                common_surname TEXT,
                 is_active BOOLEAN DEFAULT true,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -885,6 +887,20 @@ class DatabaseSchemaMixin:
             self._log_migration_failure("migrate_pair_shared_goal", exc)
             return
 
+    async def migrate_pair_naming_fields(self):
+        try:
+            await self.execute(
+                "ALTER TABLE student_groups ADD COLUMN IF NOT EXISTS naming_mode TEXT NOT NULL DEFAULT 'auto';",
+                execute=True,
+            )
+            await self.execute(
+                "ALTER TABLE student_groups ADD COLUMN IF NOT EXISTS common_surname TEXT;",
+                execute=True,
+            )
+        except Exception as exc:
+            self._log_migration_failure("migrate_pair_naming_fields", exc)
+            return
+
     async def create_table_student_resources(self):
         await self.execute("""
             CREATE TABLE IF NOT EXISTS student_resources (
@@ -1478,6 +1494,8 @@ class DatabaseSchemaMixin:
                 "balance_mode",
                 "homework_mode",
                 "onboarding_source",
+                "naming_mode",
+                "common_surname",
                 "is_active",
                 "created_at",
                 "shared_goal_text",
@@ -1684,6 +1702,7 @@ class DatabaseSchemaMixin:
         await self.migrate_user_journey_events()
         await self.migrate_user_journey_events_add_fk()
         await self.migrate_pair_shared_goal()
+        await self.migrate_pair_naming_fields()
         await self.migrate_student_stage()
         await self.migrate_users_add_tariff_text()
         await self.migrate_pricing_rates_add_label()

@@ -66,6 +66,10 @@ class AdminStudentPickerFlowTest(unittest.IsolatedAsyncioTestCase):
                 self.requested_ids.append(student_id)
                 return None
 
+            async def get_homework_template_materials(self, student_id, limit=3):
+                self.requested_ids.append(student_id)
+                return []
+
             async def has_homework_history(self, student_id):
                 self.requested_ids.append(student_id)
                 return False
@@ -84,6 +88,77 @@ class AdminStudentPickerFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.data["student_id"], NINA_ID)
         self.assertTrue(all(value == NINA_ID for value in db.requested_ids))
         self.assertEqual(message.edits[-1], ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT)
+
+    async def test_homework_picker_shows_template_draft_and_keeps_fsm(self):
+        class FakeDB:
+            async def get_user(self, telegram_id):
+                return {"full_name": "Нина Долгова", "language": "Французский"}
+
+            async def backfill_homework_materials_for_student(self, student_id):
+                return 0
+
+            async def get_recent_homework_material_mentions(self, student_id):
+                return [
+                    {
+                        "material_title": "Livre d’étudiant. Cosmopolite A1",
+                        "page_from": 94,
+                        "page_to": 95,
+                        "exercise_label": "Ex. 5-8",
+                    }
+                ]
+
+            async def get_top_homework_materials(self, student_id):
+                return [{"material_title": "Livre d’étudiant. Cosmopolite A1", "mentions_count": 3}]
+
+            async def get_latest_homework_material_mention(self, student_id):
+                return {"material_title": "Livre d’étudiant. Cosmopolite A1", "page_from": 94, "page_to": 95}
+
+            async def get_homework_template_materials(self, student_id, limit=3):
+                return [
+                    {
+                        "material_title": "Livre d’étudiant. Cosmopolite A1",
+                        "page_from": 94,
+                        "page_to": 95,
+                        "exercise_label": "Ex. 5-8",
+                    },
+                    {
+                        "material_title": "Le vocabulaire",
+                        "material_kind": "vocabulary",
+                        "raw_fragment": "Le vocabulaire. Apprenez des nouvelles expressions ici: https://example.com",
+                    }
+                ]
+
+            async def has_homework_history(self, student_id):
+                return True
+
+        state = DummyState()
+        message = DummyMessage(user_id=config.ADMIN_ID)
+        callback = DummyCallbackQuery(
+            f"admin:student_pick_select:add_homework:{NINA_ID}:{PICKER_PAGE}",
+            message=message,
+            user_id=config.ADMIN_ID,
+        )
+
+        await admin_hw_student_selected(callback, state, FakeDB())
+
+        self.assertEqual(state.data["student_id"], NINA_ID)
+        self.assertEqual(await state.get_state(), "AdminAddHomework:waiting_for_description")
+        self.assertIn("Черновик по статистике", message.edits[-1])
+        self.assertIn("<pre>", message.edits[-1])
+        self.assertIn("Livre d’étudiant. Cosmopolite A1", message.edits[-1])
+        self.assertIn("Ex. 5-8 — pages 94-95;", message.edits[-1])
+        self.assertIn("Apprenez des nouvelles expressions ici: https://example.com.", message.edits[-1])
+        self.assertNotIn("По прошлым ДЗ", message.edits[-1])
+        self.assertNotIn("Чаще всего", message.edits[-1])
+        self.assertNotIn("Подсказка", message.edits[-1])
+        self.assertNotIn("Продолжить от последнего", message.edits[-1])
+        callbacks = [
+            button.callback_data
+            for row in message.reply_markups[-1].inline_keyboard
+            for button in row
+            if button.callback_data
+        ]
+        self.assertIn("cancel_fsm", callbacks)
 
     async def test_payment_picker_keeps_student_telegram_id(self):
         state = DummyState()

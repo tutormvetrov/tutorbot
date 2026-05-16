@@ -23,10 +23,12 @@ from states.registration import Registration
 from utils.db_api.postgresql import Database
 from utils.google_calendar import load_last_sync_report
 from utils.observability import load_ops_status
-from utils.text_utils import normalize_language, parse_age
+from utils.text_utils import normalize_language, parse_age, parse_pair_name_input
 from utils.ui_text import (
     build_admin_dashboard_text,
     build_engagement_mode_intro_text,
+    build_registration_done_text,
+    build_registration_step_text,
     build_parent_home_text,
 )
 
@@ -38,6 +40,30 @@ def _progress(step: int, total: int) -> str:
     filled = "▓" * step
     empty = "░" * (total - step)
     return f"\n\n<i>Шаг {step} из {total}: {filled}{empty}</i>"
+
+
+def _registration_already(data: dict, *keys: str) -> list[str]:
+    labels = {
+        "full_name": "ФИО: {value}",
+        "age": "Возраст: {value}",
+        "student_type": "Тип: {value}",
+        "language": "Язык: {value}",
+        "level": "Уровень: {value}",
+        "child_name": "Ребёнок: {value}",
+        "child_age": "Возраст ребёнка: {value}",
+    }
+    type_labels = {"adult": "взрослый", "schoolchild": "школьник"}
+    result = []
+    for key in keys:
+        value = data.get(key)
+        if value is None or value == "":
+            continue
+        if key == "student_type":
+            value = type_labels.get(str(value), str(value))
+        if key == "level":
+            value = LEVEL_LABELS.get(str(value), str(value))
+        result.append(labels.get(key, "{value}").format(value=value))
+    return result
 
 
 async def _register_admin(message: Message, db: Database):
@@ -194,7 +220,8 @@ async def command_start(message: Message, state: FSMContext, db: Database, comma
         await state.set_state(Registration.waiting_for_role)
         await message.answer(
             "👋 <b>Добро пожаловать!</b>\n\n"
-            "Пожалуйста, выберите вашу роль:",
+            "Сейчас быстро настроим профиль. Обычно это занимает пару минут.\n"
+            "Выберите вашу роль:",
             reply_markup=role_keyboard,
         )
     else:
@@ -215,9 +242,18 @@ async def process_role_choice(callback_query: CallbackQuery, state: FSMContext):
         if role == "student_pair"
         else "Введите ваше <b>имя и фамилию</b>:"
     )
+    example = (
+        "<code>Даниил Безруков</code>"
+        if role == "student_pair"
+        else "<code>Иван Петров</code>"
+    )
     await callback_query.message.edit_text(
-        f"📝 {name_hint}\n\n"
-        f"Например: <code>Иван Петров</code>{_progress(1, total)}",
+        build_registration_step_text(
+            1,
+            total,
+            f"📝 {name_hint}",
+            example=example,
+        ),
         reply_markup=cancel_fsm_keyboard,
     )
     await callback_query.answer()
@@ -241,9 +277,13 @@ async def process_full_name(message: Message, state: FSMContext):
     await state.set_state(Registration.waiting_for_age)
     safe_name = html.quote(name)
     await message.answer(
-        f"✅ Имя сохранено: <b>{safe_name}</b>\n\n"
-        f"Сколько вам лет?\n\n"
-        f"Например: <code>16</code> или <code>шестнадцать</code>{_progress(2, total)}",
+        build_registration_step_text(
+            2,
+            total,
+            "Сколько вам лет?",
+            already=[f"ФИО: {name}"],
+            example="<code>16</code> или <code>шестнадцать</code>",
+        ),
         reply_markup=cancel_fsm_keyboard,
     )
 
@@ -269,16 +309,25 @@ async def process_age(message: Message, state: FSMContext):
     if role == "parent":
         await state.set_state(Registration.waiting_for_child_name)
         await message.answer(
-            f"✅ Возраст: <b>{age} лет</b>\n\n"
-            "Как зовут ребёнка?\n\n"
-            f"Например: <code>Анна Петрова</code>{_progress(3, total)}",
+            build_registration_step_text(
+                3,
+                total,
+                "Как зовут ребёнка?",
+                already=_registration_already(data, "full_name") + [f"Возраст: {age}"],
+                example="<code>Анна Петрова</code>",
+            ),
             reply_markup=cancel_fsm_keyboard,
         )
     else:
         await state.set_state(Registration.waiting_for_student_type)
         await message.answer(
-            f"✅ Возраст: <b>{age} лет</b>\n\n"
-            f"Вы взрослый ученик или школьник?{_progress(3, total)}",
+            build_registration_step_text(
+                3,
+                total,
+                "Вы взрослый ученик или школьник?",
+                already=_registration_already(data, "full_name") + [f"Возраст: {age}"],
+                note="Выберите вариант кнопкой ниже.",
+            ),
             reply_markup=student_type_keyboard,
         )
 
@@ -306,9 +355,13 @@ async def process_student_type(callback_query: CallbackQuery, state: FSMContext)
         label = "🎓 Взрослый"
     await state.set_state(Registration.waiting_for_language)
     await callback_query.message.edit_text(
-        f"✅ Тип: <b>{label}</b>\n\n"
-        "Какой язык вы хотите изучать?\n\n"
-        f"Например: <code>английский</code>, <code>French</code>{_progress(4, total)}",
+        build_registration_step_text(
+            4,
+            total,
+            "Какой язык вы хотите изучать?",
+            already=_registration_already(data, "full_name", "age") + [f"Тип: {label}"],
+            example="<code>английский</code>, <code>French</code>",
+        ),
         reply_markup=cancel_fsm_keyboard,
     )
     await callback_query.answer()
@@ -332,17 +385,17 @@ async def process_language(message: Message, state: FSMContext):
     await state.update_data(language=language)
     await state.set_state(Registration.waiting_for_level)
 
-    if is_known:
-        lang_line = f"✅ Язык: <b>{language}</b>"
-    else:
-        lang_line = (
-            f"⚠️ Язык сохранён как «<b>{language}</b>».\n"
-            "Если это опечатка — введите язык снова.\n"
-            "Иначе выберите уровень ниже:"
-        )
+    question = "Выберите ваш текущий уровень:"
+    if not is_known:
+        question = f"Язык сохранён как «<b>{html.quote(language)}</b>». Если это опечатка, отправьте язык ещё раз. Иначе выберите уровень:"
     await message.answer(
-        f"{lang_line}{_progress(4, total)}\n\n"
-        "Выберите ваш текущий уровень:",
+        build_registration_step_text(
+            5,
+            total,
+            question,
+            already=_registration_already(data, "full_name", "age", "student_type") + [f"Язык: {language}"],
+            note="Выберите вариант кнопкой ниже.",
+        ),
         reply_markup=level_keyboard,
     )
 
@@ -372,10 +425,13 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
         await state.update_data(level=level)
         await state.set_state(Registration.waiting_for_pair_partner_name)
         await callback_query.message.edit_text(
-            f"✅ Уровень: <b>{html.quote(level_label)}</b>\n\n"
-            "Как зовут второго участника пары?\n\n"
-            "Он может просто присутствовать на уроках: бот всё равно будет вести общий темп, "
-            f"баланс и домашние задания на двоих.{_progress(5, total)}",
+            build_registration_step_text(
+                6,
+                total,
+                "Как зовут второго участника пары?",
+                already=_registration_already(data, "full_name", "age", "student_type", "language") + [f"Уровень: {level_label}"],
+                example="<code>Полина</code> или <code>Безруковы Даниил и Полина</code>",
+            ),
             reply_markup=cancel_fsm_keyboard,
         )
         await callback_query.answer()
@@ -455,18 +511,23 @@ async def process_level(callback_query: CallbackQuery, state: FSMContext, db: Da
     materials_url = _get_materials_url(info)
 
     await callback_query.message.edit_text(
-        f"✅ <b>Регистрация завершена!</b>\n\n"
-        f"👤 {safe_full_name}  •  🎂 {data.get('age')} лет\n"
-        f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
-        f"{contacts_text}\n\n"
-        "📥 Полная инструкция к боту лежит в «👤 Ещё → 📥 Инструкция к боту». "
-        "Можно скачать DOCX и читать офлайн.\n\n"
-        "Если готовы, ниже есть тест уровня.",
+        build_registration_done_text(
+            "Регистрация завершена",
+            [
+                f"👤 {safe_full_name}",
+                f"🎂 {data.get('age')} лет",
+                f"📚 {safe_language}",
+                f"📊 {safe_level_label}",
+            ],
+            contacts_text,
+            next_hint="Если готовы, ниже есть тест уровня и инструкция к боту.",
+        ),
         reply_markup=make_post_registration_keyboard(
             booking_url,
             website_url,
             materials_url,
             include_level_test=True,
+            guide_callback="guide:menu:student",
         ),
     )
     await callback_query.answer()
@@ -498,6 +559,9 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
 
     data = await state.get_data()
     full_name = data["full_name"]
+    parsed_pair = parse_pair_name_input(full_name, partner_name)
+    full_name = parsed_pair["primary_name"] or full_name
+    partner_name = parsed_pair["partner_name"] or partner_name
     language = data["language"]
     level = data["level"]
     user_id = message.from_user.id
@@ -594,18 +658,23 @@ async def process_pair_partner_name(message: Message, state: FSMContext, db: Dat
     materials_url = _get_materials_url(info)
 
     await message.answer(
-        f"✅ <b>Регистрация пары завершена!</b>\n\n"
-        f"👥 {safe_full_name} + {safe_partner_name}\n"
-        f"📚 {safe_language}  •  📊 {safe_level_label}\n\n"
-        "Бот будет вести вас как одну учебную пару: общий баланс, один темп и одно ДЗ на двоих."
-        "\n\n"
-        f"{contacts_text}\n\n"
-        "Если готовы, ниже есть тест уровня для стартовой диагностики.",
+        build_registration_done_text(
+            "Регистрация пары завершена",
+            [
+                f"👥 {safe_full_name} + {safe_partner_name}",
+                f"📚 {safe_language}",
+                f"📊 {safe_level_label}",
+                "Общий баланс, один темп и одно ДЗ на двоих.",
+            ],
+            contacts_text,
+            next_hint="Если готовы, ниже есть тест уровня и инструкция к боту.",
+        ),
         reply_markup=make_post_registration_keyboard(
             booking_url,
             website_url,
             materials_url,
             include_level_test=True,
+            guide_callback="guide:menu:student",
         ),
     )
 
@@ -712,21 +781,28 @@ async def _finish_parent_registration(
         if linked_student
         else "⏳ Связь появится автоматически, когда имя совпадёт с активным профилем ученика."
     )
+    from handlers.users.callbacks import _build_contacts_text
     header = (
-        f"✅ <b>Регистрация завершена!</b>\n\n"
-        f"👤 Вы: {html.quote(full_name)}\n"
-        f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет.\n"
-        f"{mode_line}\n\n"
-        f"{link_line}\n\n"
-        "📥 Памятка для родителя — «👤 Ещё → 📥 Инструкция к боту»."
+        build_registration_done_text(
+            "Регистрация завершена",
+            [
+                f"👤 Вы: {html.quote(full_name)}",
+                f"👧 Ребёнок: {html.quote(student_name)}, {student_age} лет",
+                mode_line,
+                link_line,
+            ],
+            _build_contacts_text(load_teacher_info(), show_address=True),
+            next_hint="Памятка для родителя доступна кнопкой ниже.",
+        )
     )
 
-    if children:
-        body = build_parent_home_text(full_name, children)
-        keyboard = make_parent_home_keyboard(children)
-        await message.answer(f"{header}\n\n{body}", reply_markup=keyboard)
-    else:
-        await message.answer(header, reply_markup=parent_main_keyboard)
+    await message.answer(
+        header,
+        reply_markup=make_post_registration_keyboard(
+            guide_callback="guide:send:parent",
+            include_parent_home=True,
+        ),
+    )
 
 
 @router.message(StateFilter(Registration.waiting_for_child_name))
@@ -740,12 +816,17 @@ async def process_child_name(message: Message, state: FSMContext):
         return
 
     total = (await state.get_data()).get("reg_total", 6)
+    data = await state.get_data()
     await state.update_data(child_name=child_name)
     await state.set_state(Registration.waiting_for_child_age)
     await message.answer(
-        f"✅ Ребёнок: <b>{html.quote(child_name)}</b>\n\n"
-        f"Сколько ему лет?\n\n"
-        f"Например: <code>14</code>{_progress(4, total)}",
+        build_registration_step_text(
+            4,
+            total,
+            "Сколько лет ребёнку?",
+            already=_registration_already(data, "full_name", "age") + [f"Ребёнок: {child_name}"],
+            example="<code>14</code>",
+        ),
         reply_markup=cancel_fsm_keyboard,
     )
 
@@ -774,7 +855,15 @@ async def process_child_age(message: Message, state: FSMContext):
     await state.update_data(child_age=child_age)
     await state.set_state(Registration.waiting_for_engagement_mode)
     await message.answer(
-        build_engagement_mode_intro_text(child_name) + _progress(5, total),
+        build_registration_step_text(
+            5,
+            total,
+            "Как показывать кабинет родителя?\n\n"
+            "🎯 Быть в курсе: расписание, ДЗ, план и оплаты.\n"
+            "🌿 Доверие: расписание и оплаты.",
+            already=_registration_already(data, "full_name", "age", "child_name") + [f"Возраст ребёнка: {child_age}"],
+            note="Выберите вариант кнопкой ниже.",
+        ),
         reply_markup=engagement_mode_keyboard,
     )
 

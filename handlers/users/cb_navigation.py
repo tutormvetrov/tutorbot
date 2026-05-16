@@ -149,9 +149,12 @@ async def back_to_menu(callback_query: types.CallbackQuery, state: FSMContext, d
 @router.callback_query(lambda c: c.data == 'cancel_fsm', StateFilter('*'))
 async def cancel_fsm(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
     from utils.preview_mode import get_preview_context
+    from utils.pending_admin_actions import clear_pending_broadcast
     state_data = await state.get_data()
     await state.clear()
     is_admin = callback_query.from_user.id == config.ADMIN_ID
+    if is_admin:
+        await clear_pending_broadcast(callback_query.from_user.id)
     preview = await get_preview_context(db, callback_query.from_user.id)
     if is_admin:
         restored = await restore_admin_view(

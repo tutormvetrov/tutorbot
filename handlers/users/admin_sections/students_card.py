@@ -26,6 +26,7 @@ from keyboards.inline import (
     make_teacher_reply_keyboard,
 )
 from states.registration import (
+    AdminEditFullName,
     AdminEditPreferredName,
     AdminLessonFollowup,
     AdminWriteToStudent,
@@ -38,6 +39,67 @@ from utils.ui_text import (
 )
 
 router = Router()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("admin:student_full_name:"), StateFilter("*"))
+async def admin_student_full_name_start(callback_query: types.CallbackQuery, state: FSMContext, db: Database):
+    if not is_admin(callback_query.from_user.id):
+        await callback_query.answer()
+        return
+    parts = callback_query.data.split(":")
+    try:
+        student_id = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+    except (IndexError, ValueError):
+        await callback_query.answer("Некорректный маршрут.", show_alert=True)
+        return
+    student = await db.get_user(student_id)
+    if not student or student.get("role") != "student":
+        await callback_query.answer("Ученик не найден.", show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(full_name_student_id=student_id, full_name_page=page)
+    await state.set_state(AdminEditFullName.waiting_for_text)
+    await callback_query.message.edit_text(
+        "\n".join([
+            f"✏️ <b>ФИО ученика</b>",
+            "",
+            f"Текущее: <b>{q(student['full_name'])}</b>",
+            "",
+            "Пришлите новое ФИО одним сообщением.",
+        ]),
+        reply_markup=cancel_fsm_keyboard,
+    )
+    await callback_query.answer()
+
+
+@router.message(StateFilter(AdminEditFullName.waiting_for_text))
+async def admin_student_full_name_save(message: types.Message, state: FSMContext, db: Database):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    student_id = data.get("full_name_student_id")
+    page = int(data.get("full_name_page") or 0)
+    new_value = " ".join((message.text or "").split()).strip()
+    if not student_id:
+        await state.clear()
+        return
+    if len(new_value) < 2:
+        await message.answer("⚠️ ФИО не может быть пустым.", reply_markup=cancel_fsm_keyboard)
+        return
+    await db.update_user_full_name(int(student_id), new_value)
+    sync_parent_links = getattr(db, "sync_parent_links_for_student", None)
+    if callable(sync_parent_links):
+        await sync_parent_links(int(student_id), new_value)
+    await state.clear()
+    await message.answer(
+        build_action_result_text(
+            "ФИО обновлено",
+            f"👤 Ученик: <b>{q(new_value)}</b>",
+            next_step="Имя обновлено в списках, карточке и паре.",
+        ),
+        reply_markup=_write_to_student_result_keyboard(int(student_id), page, "settings"),
+    )
 
 
 async def _show_student_card(callback_query: types.CallbackQuery, db: Database, student_id: int, page: int = 0):

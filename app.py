@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
@@ -27,6 +28,59 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class RateLimitMiddleware(BaseMiddleware):
+    def __init__(
+        self,
+        user_seconds: float,
+        admin_seconds: float,
+        callback_seconds: float,
+        admin_id: int,
+        clock: Callable[[], float] | None = None,
+    ):
+        self.user_seconds = float(user_seconds)
+        self.admin_seconds = float(admin_seconds)
+        self.callback_seconds = float(callback_seconds)
+        self.admin_id = admin_id
+        self.clock = clock or time.monotonic
+        self._last_message: dict[int, float] = {}
+        self._last_callback: dict[tuple[int, str], float] = {}
+
+    async def _notify(self, event: TelegramObject):
+        if isinstance(event, CallbackQuery) or (hasattr(event, "data") and hasattr(event, "message")):
+            await event.answer("Подождите секунду.")
+        elif isinstance(event, Message) or hasattr(event, "answer"):
+            await event.answer("Подождите секунду.")
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = getattr(event, "from_user", None)
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return await handler(event, data)
+
+        now = self.clock()
+        if isinstance(event, CallbackQuery) or (hasattr(event, "data") and hasattr(event, "message")):
+            key = (user_id, getattr(event, "data", "") or "")
+            last = self._last_callback.get(key)
+            if last is not None and now - last < self.callback_seconds:
+                await self._notify(event)
+                return None
+            self._last_callback[key] = now
+            return await handler(event, data)
+
+        interval = self.admin_seconds if user_id == self.admin_id and self.admin_id else self.user_seconds
+        last = self._last_message.get(user_id)
+        if last is not None and now - last < interval:
+            await self._notify(event)
+            return None
+        self._last_message[user_id] = now
+        return await handler(event, data)
 
 
 class DatabaseMiddleware(BaseMiddleware):
@@ -147,7 +201,13 @@ async def main():
     logger.info("База данных готова.")
     update_ops_status(status="starting", bot_username=me.username, scheduler="starting")
 
-    # Регистрируем middleware — db попадёт в каждый хендлер как параметр
+    # Регистрируем middleware. Rate limit стоит до бизнес-логики.
+    dp.update.middleware(RateLimitMiddleware(
+        config.RATE_LIMIT_USER_SECONDS,
+        config.RATE_LIMIT_ADMIN_SECONDS,
+        config.RATE_LIMIT_CALLBACK_SECONDS,
+        config.ADMIN_ID,
+    ))
     dp.update.middleware(DatabaseMiddleware(db))
 
     # Планировщик задач

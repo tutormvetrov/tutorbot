@@ -10,8 +10,18 @@ if str(ROOT) not in sys.path:
 
 from app import DatabaseMiddleware
 from data import config
-from handlers.users.admin import command_block, command_blocked, command_unblock
-from tests.helpers import DummyCallbackQuery, DummyMessage
+from handlers.users.admin import (
+    admin_blocked,
+    admin_blocked_add_start,
+    admin_blocked_add_text,
+    admin_blocked_unblock,
+    command_block,
+    command_blocked,
+    command_unblock,
+)
+from keyboards.inline import admin_service_keyboard
+from states.registration import AdminBlockTelegramId
+from tests.helpers import DummyCallbackQuery, DummyMessage, DummyState
 from utils.ui_text import BLOCKED_ACCOUNT_ALERT, BLOCKED_ACCOUNT_TEXT
 
 
@@ -188,6 +198,61 @@ class AdminBlockCommandsTest(unittest.IsolatedAsyncioTestCase):
         await command_blocked(message, db)
 
         self.assertIn("<code>777</code>", message.answers[-1])
+        self.assertIn("<code>999</code>", message.answers[-1])
+
+    def test_service_menu_has_blocked_ids_entry(self):
+        callbacks = [
+            button.callback_data
+            for row in admin_service_keyboard.inline_keyboard
+            for button in row
+        ]
+
+        self.assertIn("admin:blocked", callbacks)
+
+    async def test_blocked_callback_lists_ids_with_unblock_buttons(self):
+        db = _AdminBlockDB()
+        await db.block_telegram_id(777, blocked_by=9001, reason="risk")
+        callback = DummyCallbackQuery("admin:blocked", user_id=9001)
+
+        await admin_blocked(callback, db)
+
+        self.assertIn("<code>777</code>", callback.message.edits[-1])
+        markup = callback.message.reply_markups[-1]
+        callbacks = [
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+        ]
+        self.assertIn("admin:blocked:add", callbacks)
+        self.assertIn("admin:blocked:unblock:777", callbacks)
+        self.assertIn("admin:cat:service", callbacks)
+
+    async def test_blocked_unblock_callback_removes_block_and_returns_to_list(self):
+        db = _AdminBlockDB()
+        await db.block_telegram_id(777, blocked_by=9001, reason="risk")
+        callback = DummyCallbackQuery("admin:blocked:unblock:777", user_id=9001)
+
+        await admin_blocked_unblock(callback, db)
+
+        self.assertNotIn(777, db.blocks)
+        self.assertTrue(db.users[777]["is_active"])
+        self.assertTrue(callback.message.edits)
+        self.assertEqual(callback.answers[-1].text, "Блокировка снята.")
+
+    async def test_blocked_add_flow_blocks_id_from_button_route(self):
+        db = _AdminBlockDB()
+        state = DummyState()
+        callback = DummyCallbackQuery("admin:blocked:add", user_id=9001)
+
+        await admin_blocked_add_start(callback, state)
+
+        self.assertEqual(state.state, AdminBlockTelegramId.waiting_for_target)
+        message = DummyMessage("999 spam", user_id=9001, full_name="Admin")
+
+        await admin_blocked_add_text(message, state, db)
+
+        self.assertIn(999, db.blocks)
+        self.assertIsNone(state.state)
         self.assertIn("<code>999</code>", message.answers[-1])
 
 

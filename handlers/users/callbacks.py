@@ -17,7 +17,7 @@ from handlers.users.cb_profile import (  # noqa: F401
     process_requisites, process_profile_delete_me, process_self_delete_confirm,
     process_self_delete_review,
 )
-from handlers.users.cb_reply import start_student_reply  # noqa: F401
+from handlers.users.cb_reply import process_student_reply_message, start_student_reply  # noqa: F401
 from handlers.users._cb_helpers import _get_learning_student_id  # noqa: F401
 from handlers.users.cb_navigation import (  # noqa: F401
     process_menu_choice,
@@ -29,7 +29,7 @@ from handlers.users.cb_misc import (  # noqa: F401
     process_homework_attachment, process_homework_done,
     process_lesson_presence, process_reschedule_pick,
     process_notif_manage, process_notif_action,
-    process_more, process_progress,
+    process_help, process_more, process_progress,
     process_lesson_feedback,
     process_work_rules, process_work_rules_accept,
     lesson_followup_no_show, admin_no_show_from_card, no_show_confirm, no_show_cancel,

@@ -25,9 +25,12 @@ from utils.ui_text import (
     build_contacts_text,
     build_first_lesson_payment_invite_text,
     build_homework_text,
+    build_homework_template_draft,
     build_materials_text,
     build_more_screen_text,
     build_parent_home_text,
+    build_registration_done_text,
+    build_registration_step_text,
     build_schedule_text,
     build_requisites_text,
     build_study_plan_text,
@@ -43,6 +46,30 @@ from utils.ui_text import (
 
 
 class UITextTest(unittest.TestCase):
+    def test_registration_step_text_is_compact(self):
+        text = build_registration_step_text(
+            2,
+            6,
+            "Сколько вам лет?",
+            already=["ФИО: Иван Петров"],
+            example="<code>16</code>",
+        )
+
+        self.assertIn("Шаг 2/6", text)
+        self.assertIn("Уже есть: ФИО: Иван Петров", text)
+        self.assertIn("Сколько вам лет?", text)
+        self.assertIn("голос", text.lower())
+
+    def test_registration_done_text_highlights_contacts(self):
+        text = build_registration_done_text(
+            "Регистрация завершена",
+            ["👤 Иван Петров"],
+            "🏠 <b>Очные занятия</b>\nул. Пушкина",
+        )
+
+        self.assertIn("Контакты и адрес", text)
+        self.assertIn("ул. Пушкина", text)
+
     def test_contacts_text_hides_raw_urls(self):
         info = {
             "contacts": {
@@ -433,7 +460,7 @@ class UITextTest(unittest.TestCase):
         self.assertIn("⚠️ Внимание", recipients)
         self.assertNotIn("<b>Внимание</b>", recipients)
 
-    def test_admin_homework_description_prompt_shows_stats_and_hint(self):
+    def test_admin_homework_description_prompt_hides_stats_blocks(self):
         text = build_admin_homework_description_prompt(
             student_name="Наталья Пименова",
             recent_mentions=[
@@ -463,16 +490,130 @@ class UITextTest(unittest.TestCase):
                 "page_to": 45,
             },
             has_homework_history=True,
+            template_draft="• Наталья Пименова\n📝 Задание:\n\n1. Le cahier d’activités - Cosmopolite 1.\nEx. 1-4 — pages 44-45;",
         )
 
-        self.assertIn("По прошлым ДЗ", text)
-        self.assertIn("Чаще всего", text)
-        self.assertIn("Подсказка", text)
+        self.assertNotIn("По прошлым ДЗ", text)
+        self.assertNotIn("Чаще всего", text)
+        self.assertNotIn("Подсказка", text)
+        self.assertNotIn("Продолжить от последнего", text)
         self.assertIn("Le cahier d’activités", text)
         self.assertIn("Cosmopolite 1", text)
-        self.assertIn("стр. 44-45", text)
+        self.assertIn("pages 44-45", text)
         self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
         self.assertIn("PDF/DOCX", text)
+
+    def test_homework_template_draft_builds_english_homework_shape(self):
+        draft = build_homework_template_draft(
+            "Михаил Шупенин",
+            [
+                {
+                    "material_title": "Workbook - Roadmap B2",
+                    "page_from": 4,
+                    "page_to": None,
+                    "exercise_label": "Ex. 1-5",
+                },
+                {
+                    "material_title": "Student's book",
+                    "page_from": 6,
+                    "page_to": 7,
+                    "exercise_label": "Ex. 3-6",
+                },
+                {
+                    "material_title": "Vocabulary",
+                    "material_kind": "vocabulary",
+                    "raw_fragment": "Vocabulary. Learn new words here: https://knowt.com/example",
+                },
+                {"material_title": "Extra"},
+            ],
+            language="Английский",
+        )
+
+        self.assertIn("• Михаил Шупенин", draft)
+        self.assertIn("📝 Задание:", draft)
+        self.assertIn("1. Workbook - Roadmap B2.", draft)
+        self.assertIn("Ex. 1-5 — page 4;", draft)
+        self.assertIn("2. Student's book.", draft)
+        self.assertIn("Ex. 3-6 — pages 6-7;", draft)
+        self.assertIn("3. Vocabulary.", draft)
+        self.assertIn("Learn new words here: https://knowt.com/example.", draft)
+        self.assertNotIn("Продолжить от последнего", draft)
+        self.assertNotIn("4. Extra", draft)
+
+    def test_homework_template_draft_builds_french_homework_shape(self):
+        draft = build_homework_template_draft(
+            "Наталья Пименова",
+            [
+                {
+                    "material_title": "Livre d’étudiant. Cosmopolite A1",
+                    "page_from": 94,
+                    "page_to": 95,
+                    "exercise_label": "Ex. 5-8",
+                },
+                {
+                    "material_title": "Cahier d’activités. Cosmopolite A1",
+                    "page_from": 62,
+                    "page_to": 63,
+                    "exercise_label": "Ex. 1-8",
+                },
+                {
+                    "material_title": "Le vocabulaire",
+                    "material_kind": "vocabulary",
+                    "raw_fragment": "Le vocabulaire. Apprenez des nouvelles expressions ici: https://example.com",
+                },
+            ],
+            language="Французский",
+        )
+
+        self.assertIn("• Наталья Пименова", draft)
+        self.assertIn("1. Livre d’étudiant. Cosmopolite A1.", draft)
+        self.assertIn("Ex. 5-8 — pages 94-95;", draft)
+        self.assertIn("2. Cahier d’activités. Cosmopolite A1.", draft)
+        self.assertIn("Ex. 1-8 — pages 62-63;", draft)
+        self.assertIn("3. Le vocabulaire.", draft)
+        self.assertIn("Apprenez des nouvelles expressions ici: https://example.com.", draft)
+
+    def test_admin_homework_description_prompt_embeds_copyable_template(self):
+        text = build_admin_homework_description_prompt(
+            student_name="Наталья <Пименова>",
+            recent_mentions=[
+                {
+                    "material_title": "Livre <A1>",
+                    "page_from": 94,
+                    "page_to": 95,
+                    "exercise_label": "Ex. 5-8",
+                    "homework_created_at": datetime(2026, 4, 4, 19, 30),
+                },
+            ],
+            top_materials=[{"material_title": "Livre <A1>", "mentions_count": 3}],
+            latest_mention={"material_title": "Livre <A1>", "page_from": 94, "page_to": 95},
+            has_homework_history=True,
+            template_draft="• Наталья <Пименова>\n📝 Задание:\n1. Livre <A1>.",
+        )
+
+        self.assertIn("📋 <b>Черновик по статистике</b>", text)
+        self.assertIn("<pre>", text)
+        self.assertNotIn("По прошлым ДЗ", text)
+        self.assertNotIn("Чаще всего", text)
+        self.assertNotIn("Подсказка", text)
+        self.assertIn("Наталья &lt;Пименова&gt;", text)
+        self.assertIn("Livre &lt;A1&gt;", text)
+        self.assertIn("</pre>", text)
+        self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
+
+    def test_admin_homework_description_prompt_hides_template_when_empty(self):
+        text = build_admin_homework_description_prompt(
+            student_name="Наталья Пименова",
+            recent_mentions=[],
+            top_materials=[],
+            latest_mention=None,
+            has_homework_history=True,
+            template_draft="",
+        )
+
+        self.assertNotIn("Черновик по статистике", text)
+        self.assertNotIn("статистика по учебникам или книгам", text.lower())
+        self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
 
     def test_admin_homework_description_prompt_falls_back_when_history_has_no_mentions(self):
         text = build_admin_homework_description_prompt(
@@ -483,7 +624,7 @@ class UITextTest(unittest.TestCase):
             has_homework_history=True,
         )
 
-        self.assertIn("статистика по учебникам или книгам", text.lower())
+        self.assertNotIn("статистика по учебникам или книгам", text.lower())
         self.assertIn("Отправьте <b>текст домашнего задания</b>", text)
         self.assertIn("PDF/DOCX", text)
 

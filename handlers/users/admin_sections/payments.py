@@ -539,16 +539,22 @@ async def admin_payment_amount_entered(message: types.Message, state: FSMContext
 
 
 async def _finalize_payment(bot, db: Database, state: FSMContext, message, student_id: int, amount: float, count: int):
-    await db.add_payment(student_id, amount, count)
+    data = await state.get_data()
+    payer_id = data.get("admin_payment_payer_id")
+    inbox_event_id = data.get("admin_inbox_event_id")
+    await db.add_payment(student_id, amount, count, payer_id=payer_id)
     balance = await db.get_student_lesson_balance(student_id)
 
     student = await db.get_user(student_id)
     student_name = q(student['full_name']) if student else str(student_id)
 
-    data = await state.get_data()
     return_view = data.get("admin_return_view")
     origin_chat_id = data.get("admin_origin_chat_id")
     origin_message_id = data.get("admin_origin_message_id")
+    if inbox_event_id:
+        mark_inbox_read = getattr(db, "mark_inbox_read", None)
+        if callable(mark_inbox_read):
+            await mark_inbox_read(int(inbox_event_id), getattr(message.from_user, "id", None))
 
     await state.clear()
     await restore_admin_view(bot, db, origin_chat_id, origin_message_id, return_view)

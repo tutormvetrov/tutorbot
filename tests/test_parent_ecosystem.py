@@ -642,6 +642,56 @@ class ParentReplyPaymentChildContextTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Анна Иванова", data.get("reply_context_label", ""))
         self.assertEqual(data.get("reply_child_link_id"), 7)
 
+    async def test_parent_payment_reply_inbox_payload_keeps_child_context(self):
+        from handlers.users.callbacks import process_student_reply_message
+
+        class FakeDB:
+            def __init__(self):
+                self.events = []
+
+            async def get_user(self, telegram_id):
+                return {
+                    "telegram_id": telegram_id,
+                    "full_name": "Мария Иванова",
+                    "role": "parent",
+                    "is_active": True,
+                }
+
+            async def add_inbox_event(self, kind, payload):
+                self.events.append((kind, payload))
+                return 1
+
+        db = FakeDB()
+        state = DummyState()
+        await state.update_data(
+            reply_context_key="payment",
+            reply_child_link_id=7,
+            reply_student_id=707,
+            reply_child_label="Анна Иванова",
+            reply_context_label="по оплате за Анна Иванова",
+        )
+
+        from data import config as data_config
+
+        original_admin_id = getattr(data_config, "ADMIN_ID", None)
+        data_config.ADMIN_ID = 1
+        try:
+            await process_student_reply_message(
+                DummyMessage("Оплатила 3000", user_id=960, full_name="Мария Иванова"),
+                state,
+                db,
+            )
+        finally:
+            data_config.ADMIN_ID = original_admin_id
+
+        self.assertEqual(db.events[0][0], "reply")
+        payload = db.events[0][1]
+        self.assertEqual(payload["telegram_id"], 960)
+        self.assertEqual(payload["context"], "payment")
+        self.assertEqual(payload["child_link_id"], 7)
+        self.assertEqual(payload["student_id"], 707)
+        self.assertEqual(payload["child_label"], "Анна Иванова")
+
 
 class ParentTrafficLightTest(unittest.TestCase):
     def _child(self, link_status="linked", next_lesson_date=datetime.now(), lesson_balance=3, overdue_homework_count=0):

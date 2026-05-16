@@ -40,6 +40,7 @@ from utils.ui_text import (
     build_action_result_text,
     build_admin_homework_description_prompt,
     build_admin_homework_list_text,
+    build_homework_template_draft,
 )
 
 from handlers.users.admin_sections.common import (
@@ -253,25 +254,34 @@ async def _build_homework_description_prompt(db: Database, student_id: int) -> s
     try:
         student = await db.get_user(student_id)
         student_name = student["full_name"] if student else str(student_id)
+        student_language = student.get("language") if student else None
     except Exception:
         student_name = str(student_id)
+        student_language = None
 
     try:
         await db.backfill_homework_materials_for_student(student_id)
         recent_mentions = await db.get_recent_homework_material_mentions(student_id)
         top_materials = await db.get_top_homework_materials(student_id)
         latest_mention = await db.get_latest_homework_material_mention(student_id)
+        template_materials = await db.get_homework_template_materials(student_id)
         has_homework_history = await db.has_homework_history(student_id)
     except Exception as exc:
         logger.warning("Не удалось собрать статистику по ДЗ для ученика %s: %s", student_id, exc)
         return ADMIN_ADD_HOMEWORK_BODY_PROMPT_TEXT
 
+    template_draft = build_homework_template_draft(
+        student_name,
+        list(template_materials or []),
+        language=student_language,
+    )
     return build_admin_homework_description_prompt(
         student_name=student_name,
         recent_mentions=list(recent_mentions or []),
         top_materials=list(top_materials or []),
         latest_mention=latest_mention,
         has_homework_history=bool(has_homework_history),
+        template_draft=template_draft,
     )
 
 

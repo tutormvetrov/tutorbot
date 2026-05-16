@@ -45,6 +45,7 @@ admin_service_keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [_btn("🧭 Алиасы Calendar", "admin:calendar_aliases")],
     [_btn("📋 Отчёт синхронизации", "admin:calendar_report")],
     [_btn("🎨 Тональность бренда", "admin:brand_tone")],
+    [_btn("🚫 Блокировки Telegram ID", "admin:blocked")],
     [_btn("📜 Правила работы", "admin:work_rules")],
     [_btn("📝 Рабочие заметки", "admin:notes")],
     [_btn("🌍 Глобальные учебные ссылки", "admin:resources:global")],
@@ -176,6 +177,7 @@ def make_admin_parent_card_keyboard(telegram_id: int, page: int, children: list[
                     _btn("✕", f"admin:parent:unlink:{link_id}:{telegram_id}:{page}"),
                 ])
     rows.append([_btn("➕ Привязать ученика", f"admin:parent:link_student:{telegram_id}:{page}")])
+    rows.append([_btn("✏️ ФИО", f"admin:parent_full_name:{telegram_id}:{page}")])
     rows.append([_btn("🪟 Открыть как родитель", f"admin:parent_preview_select:{telegram_id}:{page}")])
     rows.append([_btn("🛡 Опасные действия", f"admin:parent_danger:{telegram_id}:{page}")])
     rows.append([_btn("◀️ К списку родителей", f"admin:parents:page:{page}")])
@@ -257,7 +259,12 @@ def make_payment_delete_keyboard(student_id: int, payments: list, page: int | No
             )
         ])
     if page is not None:
-        back_view = f"admin:student_{source}:{student_id}:{page}" if source in {"actions", "settings", "danger"} else f"admin:student_card:{student_id}:{page}"
+        if source == "finance":
+            back_view = "admin:finance:balances"
+        elif source in {"actions", "settings", "danger"}:
+            back_view = f"admin:student_{source}:{student_id}:{page}"
+        else:
+            back_view = f"admin:student_card:{student_id}:{page}"
         rows.append([_btn("◀️ Назад", back_view)])
     else:
         rows.append([_btn("◀️ К учебному процессу", "admin:cat:education")])
@@ -441,11 +448,19 @@ def make_admin_inbox_keyboard(events: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_admin_inbox_item_keyboard(event_id: int, kind: str) -> InlineKeyboardMarkup:
+def make_admin_inbox_item_keyboard(
+    event_id: int,
+    kind: str,
+    context: str | None = None,
+    student_id: int | None = None,
+    back_callback: str = "admin:inbox",
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    if kind == "reply" and context == "payment" and student_id:
+        rows.append([_btn("💳 Провести оплату", f"admin:inbox:add_payment:{event_id}")])
     rows.append([_btn("✉️ Ответить", f"admin:inbox:reply:{event_id}")])
     rows.append([_btn("✓ Закрыть", f"admin:inbox:item:{event_id}:close")])
-    rows.append([_btn("◀️ К входящим", "admin:inbox")])
+    rows.append([_btn("◀️ К входящим", back_callback)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -478,7 +493,37 @@ def make_briefing_keyboard(most_urgent_student_id: int | None = None) -> InlineK
 # ─── Finance ─────────────────────────────────────────────────────────────────
 
 finance_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-    [_btn("💰 Оплаты: добавить / просмотреть", "admin:finance:payments")],
+    [_btn("➕ Добавить оплату", "admin:add_payment:finance")],
+    [_btn("📥 Входящие оплаты", "admin:finance:payment_inbox")],
+    [_btn("⚠️ Нулевой баланс", "admin:finance:unpaid")],
+    [_btn("📊 Балансы учеников", "admin:finance:balances")],
     [_btn("💳 Тарифы", "admin:pricing")],
     [_btn("◀️ К панели", "back_to_admin")],
 ])
+
+
+def make_finance_payment_inbox_keyboard(events: list) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for event in events:
+        rows.append([_btn(_inbox_event_label(event), f"admin:finance:inbox:item:{event['id']}")])
+    if not events:
+        rows.append([_btn("✅ Нет входящих оплат", "admin:inbox:noop")])
+    rows.append([_btn("◀️ К финансам", "admin:finance")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_finance_balances_keyboard(students: list) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for student in students[:20]:
+        balance = int(student.get("lesson_balance") or student.get("balance") or 0)
+        name = student.get("full_name") or str(student.get("telegram_id"))
+        rows.append([
+            _btn(
+                f"{balance:+d} ур. · {name}",
+                f"admin:student_payments:{student['telegram_id']}:0:finance",
+            )
+        ])
+    if not students:
+        rows.append([_btn("✅ Список пуст", "admin:inbox:noop")])
+    rows.append([_btn("◀️ К финансам", "admin:finance")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
