@@ -60,7 +60,7 @@ sudo journalctl -u tutorbot --since "10 minutes ago" --no-pager
 
 - [ ] Остановить или перезапустить сервис в безопасное состояние.
 - [ ] Вернуть предыдущую версию кода.
-- [ ] Если релиз затронул данные — восстановить базу:
+- [ ] Если релиз затронул данные - восстановить базу:
 
 ```bash
 TUTORBOT_ALLOW_RESTORE=1 ./scripts/db_restore.sh /path/to/backup.sql.gz
